@@ -21,9 +21,8 @@ class IntentRouter:
         }
         
         self.mode_patterns = {
-            r"\b(follow\s+me|follow\s+mode)\b": "mode_follow",
             r"\b(explore|autonomous\s+mode|auto\s+mode)\b": "mode_autonomous",
-            r"\b(manual\s+mode|stop\s+following|stop\s+exploring)\b": "mode_manual"
+            r"\b(manual\s+mode|stop\s+exploring)\b": "mode_manual"
         }
         
         self.report_patterns = {

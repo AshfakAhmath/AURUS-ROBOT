@@ -18,7 +18,7 @@ AURUS is a voice-activated, emotionally intelligent, and visually aware robotic 
 5. **Text-to-Speech (TTS):** The system shall utilize Gemini's native `"audio"` modality to generate lifelike speech (e.g., using the "Puck" voice) and play it asynchronously.
 6. **Proactive Emotional Engine:** The system shall maintain an internal mood state consisting of Happiness, Curiosity, Social Energy, and Trust. These values influence autonomous behaviors, and the system shall spontaneously initiate greetings or check-ins when humans are present.
 7. **Mecanum Locomotion:** The system shall provide omnidirectional movement (forward, backward, strafe, spin) and complex choreographed animations (wiggle, shiver, nod, dance).
-8. **Autonomous Follow Mode:** The system shall integrate visual tracking with sonar data via a PID controller to automatically orient toward and maintain a set distance from a recognized human.
+8. **Autonomous Explore Mode:** The current runtime uses guarded ultrasonic reactions and periodic sensor sweeps; follow mode has been removed.
 9. **Explainable AI (XAI):** The system shall broadcast the internal logic (Decision, Reason, Confidence, Source Data) of the Gemini API over WebSockets to be displayed live on the UI.
 10. **Web Control Dashboard:** The system shall serve a web interface (Flask/SocketIO) providing live telemetry, manual strafe controls, sensor radar, simulated camera feed, XAI readouts, and an automated Demonstration Mode.
 
@@ -126,13 +126,13 @@ The resulting binary audio data is extracted, saved as a `.wav` file, and played
 The master controller. It runs a Flask web server and a SocketIO WebSocket server.
 - **`mood_engine_loop()`:** Runs in the background (1Hz). Evaluates sensor data, updates `Social Energy`, triggers proactive initiatives, and tracks presence states.
 - **`autonomous_explore_loop()`:** Runs at ~6Hz. Automatically drives the rover forward and steers away from obstacles dynamically.
-- **`follow_loop()`:** Dedicated thread for Follow Mode that calculates PID motor commands based on face bounding boxes.
+- **Explore controller:** `BehaviorController` issues short-lived requests while `MotionArbiter` enforces proximity and deadman safety.
 
 ### 5.2 `src/ai/aurus_brain.py` & `intent_router.py`
 The AI logic core. 
 - Manages the SQLite `ConversationMemory`.
 - Constructs complex prompts combining sensor data and history.
-- Evaluates Intents (via `intent_router.py`) to trigger hardcoded actions like Follow Mode or Daily Summaries.
+- Evaluates intents to trigger guarded actions such as exploration or daily summaries.
 - Injects local fallback XAI metadata.
 
 ### 5.3 `src/vision/vision_system.py`

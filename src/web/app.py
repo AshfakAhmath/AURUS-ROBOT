@@ -104,11 +104,25 @@ def create_app(runtime):
                 "fallback_reason": ""
             })
 
+    @socketio.on("browser_wake_detected")
+    def browser_wake_detected(_data=None):
+        if not runtime.browser_wake_detected():
+            emit("command_error", {"message": "Wake acknowledgement is unavailable while E-STOP is latched."})
+
+    @socketio.on("browser_listen_timeout")
+    def browser_listen_timeout(_data=None):
+        runtime.browser_listening_finished()
+
     @socketio.on("send_text")
     def send_text(data):
-        text = str(payload(data).get("text", "")).strip()
+        data = payload(data)
+        text = str(data.get("text", "")).strip()
+        source = str(data.get("source", "text"))
+        if source not in ("text", "browser-mic"):
+            source = "text"
         if text:
-            socketio.start_background_task(runtime.handle_text, text, "text")
+            handler = runtime.handle_browser_speech if source == "browser-mic" else runtime.handle_text
+            socketio.start_background_task(handler, text)
 
     @socketio.on("run_mcp_agent")
     def run_mcp_agent(data):

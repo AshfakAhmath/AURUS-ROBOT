@@ -1,0 +1,289 @@
+Speak normally for three seconds. Capturing from plughw:3,0 (configured ALSA capture)...
+Playing a two-second -6 dB diagnostic tone. Note whether it is clearly audible...
+
+=== AURUS HARDWARE DIAGNOSTIC ===
+{
+  "user": "tt-11",
+  "groups": [
+    "adm",
+    "dialout",
+    "cdrom",
+    "sudo",
+    "audio",
+    "video",
+    "plugdev",
+    "games",
+    "users",
+    "input",
+    "render",
+    "netdev",
+    "lpadmin",
+    "gpio",
+    "i2c",
+    "spi",
+    "tt-11"
+  ],
+  "python": "/home/tt-11/AURUS-3.0/.venv/bin/python",
+  "service": {
+    "active": false,
+    "detail": {
+      "exit": 0,
+      "output": "MainPID=0\nExecMainStatus=0\nWorkingDirectory=\nUser=\nGroup=\nSupplementaryGroups=\nSubState=dead\nFragmentPath="
+    }
+  },
+  "runtime_health": "unavailable: <urlopen error [Errno 111] Connection refused>",
+  "configured": {
+    "MIC_INDEX": "",
+    "ALSA_CAPTURE_DEVICE": "plughw:3,0",
+    "ALSA_PLAYBACK_DEVICE": "",
+    "AURUS_WAKE_ENABLED": "true",
+    "AURUS_TTS_VOLUME_PERCENT": "100",
+    "AURUS_TTS_GAIN_DB": "12"
+  },
+  "camera_devices": [
+    {
+      "path": "/dev/video0",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video10",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video11",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video12",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video13",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video14",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video15",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video16",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video18",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video19",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video20",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video21",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video22",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video23",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/video31",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/media0",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/media1",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/media2",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/media3",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    },
+    {
+      "path": "/dev/media4",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "video"
+    }
+  ],
+  "sound_devices": [
+    {
+      "path": "/dev/snd/by-id",
+      "mode": "drwxr-xr-x",
+      "owner": "root",
+      "group": "root"
+    },
+    {
+      "path": "/dev/snd/by-path",
+      "mode": "drwxr-xr-x",
+      "owner": "root",
+      "group": "root"
+    },
+    {
+      "path": "/dev/snd/controlC0",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/controlC1",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/controlC2",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/controlC3",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/pcmC0D0p",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/pcmC1D0p",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/pcmC2D0p",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/pcmC3D0c",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/seq",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    },
+    {
+      "path": "/dev/snd/timer",
+      "mode": "crw-rw----",
+      "owner": "root",
+      "group": "audio"
+    }
+  ],
+  "camera_owners": {
+    "exit": 1,
+    "output": "none"
+  },
+  "related_processes": {
+    "exit": 1,
+    "output": "none"
+  },
+  "camera_list": {
+    "exit": 0,
+    "output": "Available cameras\n-----------------\n0 : imx219 [3280x2464 10-bit] (/base/soc/i2c0mux/i2c@1/imx219@10)\n    Modes: 'SBGGR10_CSI2P' : 640x480 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             1640x1232 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             1920x1080 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             3280x2464 [30.00 fps - (65535, 65535)/65535x65535 crop]\n           'SBGGR8' : 640x480 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                      1640x1232 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                      1920x1080 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                      3280x2464 [30.00 fps - (65535, 65535)/65535x65535 crop]"
+  },
+  "capture_cards": {
+    "exit": 0,
+    "output": "**** List of CAPTURE Hardware Devices ****\ncard 3: Device [USB PnP Sound Device], device 0: USB Audio [USB Audio]\n  Subdevices: 0/1\n  Subdevice #0: subdevice #0"
+  },
+  "playback_cards": {
+    "exit": 0,
+    "output": "**** List of PLAYBACK Hardware Devices ****\ncard 0: vc4hdmi0 [vc4-hdmi-0], device 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]\n  Subdevices: 1/1\n  Subdevice #0: subdevice #0\ncard 1: vc4hdmi1 [vc4-hdmi-1], device 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]\n  Subdevices: 1/1\n  Subdevice #0: subdevice #0\ncard 2: Headphones [bcm2835 Headphones], device 0: bcm2835 Headphones [bcm2835 Headphones]\n  Subdevices: 8/8\n  Subdevice #0: subdevice #0\n  Subdevice #1: subdevice #1\n  Subdevice #2: subdevice #2\n  Subdevice #3: subdevice #3\n  Subdevice #4: subdevice #4\n  Subdevice #5: subdevice #5\n  Subdevice #6: subdevice #6\n  Subdevice #7: subdevice #7"
+  },
+  "mixer_controls": {
+    "exit": 0,
+    "output": "Simple mixer control 'Master',0\nSimple mixer control 'Capture',0"
+  },
+  "active_tests": {
+    "microphone": {
+      "ok": false,
+      "device": "plughw:3,0",
+      "capture": {
+        "exit": 1,
+        "output": "arecord: main:831: audio open error: Device or resource busy"
+      }
+    },
+    "camera": {
+      "ok": false,
+      "bytes": 0,
+      "command": {
+        "exit": 255,
+        "output": "[0:47:15.078630097] [4723] \u001b[1;32m INFO \u001b[1;37mCamera \u001b[1;34mcamera_manager.cpp:330 \u001b[0mlibcamera v0.5.2+99-bfd68f78\n[0:47:15.092766484] [4726] \u001b[1;31mERROR \u001b[1;37mV4L2 \u001b[1;34mv4l2_device.cpp:390 \u001b[0;32m'imx219 10-0010': \u001b[0mUnable to set controls: Device or resource busy\n[0:47:15.102638827] [4726] \u001b[1;32m INFO \u001b[1;37mIPAProxy \u001b[1;34mipa_proxy.cpp:180 \u001b[0mUsing tuning file /usr/share/libcamera/ipa/rpi/vc4/imx219.json\n[0:47:15.108799914] [4726] \u001b[1;32m INFO \u001b[1;37mCamera \u001b[1;34mcamera_manager.cpp:220 \u001b[0mAdding camera '/base/soc/i2c0mux/i2c@1/imx219@10' for pipeline handler rpi/vc4\n[0:47:15.108845395] [4726] \u001b[1;32m INFO \u001b[1;37mRPI \u001b[1;34mvc4.cpp:440 \u001b[0mRegistered camera /base/soc/i2c0mux/i2c@1/imx219@10 to Unicam device /dev/media1 and ISP device /dev/media2\n[0:47:15.108879469] [4726] \u001b[1;32m INFO \u001b[1;37mRPI \u001b[1;34mpipeline_base.cpp:1107 \u001b[0mUsing configuration file '/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml'\n[0:47:15.147192731] [4723] \u001b[1;32m INFO \u001b[1;37mCamera \u001b[1;34mcamera.cpp:1020 \u001b[0mPipeline handler in use by another process\nERROR: *** failed to acquire camera /base/soc/i2c0mux/i2c@1/imx219@10 ***"
+      }
+    },
+    "speaker": {
+      "ok": true,
+      "device": "default",
+      "command": {
+        "exit": 0,
+        "output": "none"
+      }
+    }
+  }
+}

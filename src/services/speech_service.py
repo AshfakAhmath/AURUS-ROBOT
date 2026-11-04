@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - dependency is optional
 
 ResultCallback = Callable[[str, str | None], None]
 ARECORD_DEVICE = re.compile(
-    r"card\s+\d+:\s+(?P<card>\S+)\s+\[[^\]]+\],\s+device\s+(?P<device>\d+):",
+    r"card\s+(?P<card>\d+):.*?device\s+(?P<device>\d+):",
     re.IGNORECASE,
 )
 
@@ -57,7 +57,7 @@ def _parse_arecord_devices(output: str) -> list[tuple[str, str]]:
         match = ARECORD_DEVICE.search(line)
         if not match:
             continue
-        device = f"plughw:CARD={match.group('card')},DEV={match.group('device')}"
+        device = f"plughw:{match.group('card')},{match.group('device')}"
         priority = 0 if "usb" in line.lower() else 1
         devices.append((priority, position, device))
     devices.sort()
@@ -335,12 +335,16 @@ class SpeechService:
         self.playback_active = playback_active or threading.Event()
 
         self._model = None
+        self._groq_client = None
+        self._groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+        self._model_lock = threading.Lock()
         self._keyword_engine: SherpaKeywordEngine | None = None
         self._vad_engine: SherpaVadEngine | AdaptiveEnergyVad | None = None
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._wake_callback: Callable[[str], None] | None = None
+        self._wake_pending = False
         self._pending_callback: ResultCallback | None = None
         self._capturing = False
         self._processing = False
@@ -353,12 +357,12 @@ class SpeechService:
         self.wake_error = "wake word not initialized"
         self.vad_error = "VAD not initialized"
         self.vad_backend = "unavailable"
-        self.stt_backend = "vosk"
+        self.stt_backend = "unavailable"
 
     @property
     def healthy(self) -> bool:
         return bool(
-            self._model is not None
+            (self._groq_client is not None or self._model is not None)
             and (pyaudio is not None or shutil.which("arecord"))
             and self._audio_ready
             and self._thread
@@ -368,7 +372,12 @@ class SpeechService:
     @property
     def listening(self) -> bool:
         with self._lock:
-            return self._capturing or self._processing or self._pending_callback is not None
+            return (
+                self._wake_pending
+                or self._capturing
+                or self._processing
+                or self._pending_callback is not None
+            )
 
     @property
     def wake_gate_passed(self) -> bool:
@@ -377,7 +386,9 @@ class SpeechService:
 
     @property
     def wake_active(self) -> bool:
-        return bool(self.wake_requested and self.wake_gate_passed and self.healthy)
+        with self._lock:
+            wake_pending = self._wake_pending
+        return bool(self.wake_requested and self.wake_gate_passed and self.healthy and not wake_pending)
 
     @property
     def wake_backend(self) -> str:
@@ -386,11 +397,13 @@ class SpeechService:
     def start(self, wake_callback: Callable[[str], None] | None = None) -> None:
         if self._thread and self._thread.is_alive():
             return
-        if (pyaudio is None and not shutil.which("arecord")) or Model is None or KaldiRecognizer is None:
-            self.error = "PyAudio/arecord or Vosk is not installed"
+        if pyaudio is None and not shutil.which("arecord"):
+            self.error = "PyAudio or the ALSA arecord utility is not installed"
             return
-        if not self.model_path.is_dir():
-            self.error = f"Vosk model missing: {self.model_path}"
+        if not self._groq_api_key and (
+            Model is None or KaldiRecognizer is None or not self.model_path.is_dir()
+        ):
+            self.error = "No STT backend: configure GROQ_API_KEY or install Vosk and its model"
             return
 
         self._wake_callback = wake_callback
@@ -403,7 +416,18 @@ class SpeechService:
 
     def _initialize_and_run(self) -> None:
         try:
-            self._model = Model(str(self.model_path))
+            if self._groq_api_key:
+                try:
+                    from groq import Groq
+
+                    self._groq_client = Groq(
+                        api_key=self._groq_api_key, timeout=20.0, max_retries=1
+                    )
+                    self.stt_backend = "groq-whisper"
+                except Exception as exc:
+                    self.error = f"Groq Whisper initialization failed: {str(exc)[:180]}"
+            if self._groq_client is None:
+                self._load_vosk_model()
             if self._stop.is_set():
                 return
             self._initialize_vad()
@@ -414,6 +438,21 @@ class SpeechService:
             self._audio_loop()
         except Exception as exc:
             self.error = f"speech model initialization failed: {exc}"
+
+    def _load_vosk_model(self) -> None:
+        if self._model is not None:
+            return
+        with self._model_lock:
+            if self._model is not None:
+                return
+            if Model is None or KaldiRecognizer is None:
+                raise RuntimeError("Vosk is not installed")
+            if not self.model_path.is_dir():
+                raise RuntimeError(f"Vosk model missing: {self.model_path}")
+            self._model = Model(str(self.model_path))
+            self.stt_backend = (
+                "groq-whisper+vosk-fallback" if self._groq_client is not None else "vosk"
+            )
 
     def _initialize_vad(self) -> None:
         try:
@@ -431,14 +470,17 @@ class SpeechService:
         self._keyword_engine = None
         if not self.wake_requested:
             self.wake_error = "wake word disabled"
+            print("[SpeechService] Local wake word disabled by AURUS_WAKE_ENABLED.")
             return
         try:
             if self.keyword_model_path is None or self.keywords_path is None:
                 raise RuntimeError("wake model or keyword file path is not configured")
             self._keyword_engine = SherpaKeywordEngine(self.keyword_model_path, self.keywords_path)
             self.wake_error = ""
+            print("[SpeechService] Local AURUS wake-word detector is ready.")
         except Exception as exc:
             self.wake_error = str(exc)[:240]
+            print(f"[SpeechService] Local wake word unavailable: {self.wake_error}")
 
     def stop(self) -> None:
         self._stop.set()
@@ -447,6 +489,7 @@ class SpeechService:
         with self._lock:
             callback = self._pending_callback
             self._pending_callback = None
+            self._wake_pending = False
             self._capturing = False
             self._processing = False
         if callback:
@@ -460,7 +503,15 @@ class SpeechService:
             if self._capturing or self._processing or self._pending_callback is not None:
                 return False
             self._pending_callback = callback
+            self._wake_pending = False
         return True
+
+    def cancel_wake(self) -> None:
+        """Release a detected wake phrase when acknowledgement/listening cannot start."""
+        with self._lock:
+            self._wake_pending = False
+        if self._keyword_engine:
+            self._keyword_engine.reset()
 
     def _microphone_candidates(self, audio) -> list[tuple[int, str]]:
         """Prefer a physical USB microphone over fragile default/Pulse devices."""
@@ -504,6 +555,12 @@ class SpeechService:
     def _open_stream(self, audio):
         candidates = self._microphone_candidates(audio)
         alsa_device = _discover_arecord_device() if os.name != "nt" else None
+        alsa_is_configured = bool(os.getenv("ALSA_CAPTURE_DEVICE", "").strip())
+        alsa_is_preferred = bool(
+            alsa_device
+            and self.microphone_index is None
+            and (alsa_is_configured or alsa_device[1].startswith("USB"))
+        )
         physical_candidates = [
             candidate
             for candidate in candidates
@@ -515,6 +572,21 @@ class SpeechService:
             raise RuntimeError("no microphone input devices were reported by PyAudio or ALSA")
 
         errors = []
+
+        # A configured ALSA device is an explicit override, and an automatically
+        # discovered USB ALSA device is preferred over onboard/default inputs.
+        # Previously either could lose to the first PortAudio device that opened.
+        if alsa_device and alsa_is_preferred:
+            device, description = alsa_device
+            try:
+                stream = ArecordStream(device, self.RATE)
+                self.selected_microphone_index = None
+                self.selected_microphone_name = f"{description}: {device}"
+                print(f"[SpeechService] Microphone connected via {self.selected_microphone_name}.")
+                return stream
+            except Exception as exc:
+                errors.append(f"{device}: {str(exc)[:100]}")
+
         initial_candidates = candidates if self.microphone_index is not None else physical_candidates
         for index, name in initial_candidates:
             try:
@@ -534,7 +606,7 @@ class SpeechService:
                 errors.append(f"{index} ({name}): {str(exc)[:100]}")
         # ALSA plughw can resample USB microphones that reject PortAudio's
         # requested 16 kHz hardware rate, while keeping capture fully local.
-        if alsa_device:
+        if alsa_device and not alsa_is_preferred:
             device, description = alsa_device
             try:
                 stream = ArecordStream(device, self.RATE)
@@ -570,10 +642,52 @@ class SpeechService:
     def _transcribe(self, pcm: bytes) -> str:
         if not pcm:
             return ""
+
+        # Use Groq Whisper when configured. Vosk is loaded lazily only if the
+        # cloud request fails, avoiding a large model load on normal startup.
+        if self._groq_client is not None:
+            temp_path: str | None = None
+            try:
+                import tempfile
+                import wave
+
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    temp_path = f.name
+
+                with wave.open(temp_path, "wb") as wav_file:
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(self.RATE)
+                    wav_file.writeframes(pcm)
+
+                with open(temp_path, "rb") as file:
+                    transcription = self._groq_client.audio.transcriptions.create(
+                        file=file,
+                        model=os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo"),
+                        response_format="json",
+                        language="en",
+                        temperature=0.0,
+                    )
+                text = transcription.text.strip()
+                self.error = ""
+                return text
+            except Exception as exc:
+                self.error = f"Groq Whisper failed; using Vosk fallback: {str(exc)[:160]}"
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+
+        # Fallback to local Vosk
+        self._load_vosk_model()
         recognizer = KaldiRecognizer(self._model, self.RATE)
         recognizer.AcceptWaveform(pcm)
         result = json.loads(recognizer.FinalResult())
-        return " ".join(str(result.get("text", "")).strip().split())
+        text = " ".join(str(result.get("text", "")).strip().split())
+        self.error = ""
+        return text
 
     @staticmethod
     def _safe_result(callback: ResultCallback, text: str, error: str | None) -> None:
@@ -614,15 +728,21 @@ class SpeechService:
             self._vad_engine.reset()
         return callback
 
-    def _wake_result_callback(self) -> ResultCallback:
-        def deliver(text: str, error: str | None) -> None:
-            if not error and text and self._wake_callback:
-                try:
-                    self._wake_callback(text)
-                except Exception:
-                    pass
-
-        return deliver
+    def _notify_wake_detected(self, detected: str) -> None:
+        """Latch one wake event until the runtime finishes its acknowledgement."""
+        with self._lock:
+            if self._wake_pending or self._capturing or self._processing or self._pending_callback:
+                return
+            self._wake_pending = True
+            callback = self._wake_callback
+        print(f"[SpeechService] Wake phrase detected: {detected}")
+        if callback is None:
+            self.cancel_wake()
+            return
+        try:
+            callback(detected)
+        except Exception:
+            self.cancel_wake()
 
     def _audio_loop(self) -> None:
         audio = None
@@ -702,9 +822,7 @@ class SpeechService:
                 if self.wake_active and self._keyword_engine:
                     detected = self._keyword_engine.accept(data, self.RATE)
                     if detected:
-                        with self._lock:
-                            if not self._capturing and not self._processing and self._pending_callback is None:
-                                self._pending_callback = self._wake_result_callback()
+                        self._notify_wake_detected(detected)
         except Exception as exc:
             self.error = f"microphone pipeline failed: {exc}"
             if callback:
@@ -713,6 +831,7 @@ class SpeechService:
             with self._lock:
                 pending = self._pending_callback
                 self._pending_callback = None
+                self._wake_pending = False
                 self._capturing = False
                 self._processing = False
             if pending:

@@ -2,14 +2,19 @@
 Description=AURUS Evaluation Edition
 After=network-online.target sound.target
 Wants=network-online.target
+Conflicts=aurus-assistant.service aurus-autonomy.service aurus-coordinator.service aurus-hardware.service aurus-vision.service aurus-web.service
 
 [Service]
 Type=simple
-User=pi
-Group=pi
-WorkingDirectory=/home/pi/aurus
-EnvironmentFile=-/home/pi/aurus/.env
-ExecStart=/home/pi/aurus/.venv/bin/python /home/pi/aurus/run.py
+User=tt-11
+Group=tt-11
+SupplementaryGroups=audio video
+WorkingDirectory=/home/tt-11/AURUS-3.0
+Environment=PYTHONUNBUFFERED=1
+Environment=AURUS_RECLAIM_DEVICES=true
+Environment=AURUS_RECLAIM_GRACE_SECONDS=3
+EnvironmentFile=-/home/tt-11/AURUS-3.0/.env
+ExecStart=/home/tt-11/AURUS-3.0/.venv/bin/python /home/tt-11/AURUS-3.0/run.py
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=8

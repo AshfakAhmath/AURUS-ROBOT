@@ -12,7 +12,6 @@ class RobotMode(str, Enum):
     IDLE = "idle"
     MANUAL = "manual"
     LISTENING = "listening"
-    FOLLOWING = "following"
     EXPLORING = "exploring"
     PERFORMING = "performing"
     ESTOP = "estop"
@@ -42,6 +41,16 @@ class SensorSnapshot:
     @property
     def front_min(self) -> float:
         return min(self.fl, self.f, self.fr)
+
+    def navigation_front_min(self, center_enabled: bool = True) -> float:
+        """Return the clearance used for motion safety.
+
+        The physical rover can explicitly disable a failed center transducer,
+        while simulation and healthy hardware continue to use all three front
+        readings.  Keeping ``front_min`` truthful avoids silently weakening the
+        global safety contract.
+        """
+        return self.front_min if center_enabled else min(self.fl, self.fr)
 
     @property
     def rear_min(self) -> float:

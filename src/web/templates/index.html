@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#080b10">
   <title>AURUS Command Center</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2311181d'/%3E%3Cpath d='M8 24 14 8h4l6 16h-4l-1.2-3.5h-5.7L12 24zm6.2-7h3.5L16 12z' fill='%2371e3d3'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/evaluation.css') }}">
 </head>
 <body>
@@ -123,7 +124,6 @@
           <div class="mode-grid">
             <button data-mode="idle"><i></i>Idle</button>
             <button data-mode="manual"><i></i>Manual</button>
-            <button data-mode="following"><i></i>Follow</button>
             <button data-mode="exploring"><i></i>Explore</button>
           </div>
 
@@ -203,6 +203,28 @@
           <p id="error" class="error" role="alert"></p>
         </section>
 
+        <section class="panel mission-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">Curiosity engine</p>
+              <h2>Exploration discoveries</h2>
+            </div>
+            <span id="mission-status" class="meta-chip">Mission idle</span>
+          </div>
+          <div class="mission-overview">
+            <div><span>Elapsed</span><strong id="mission-elapsed">0:00</strong></div>
+            <div><span>Discoveries</span><strong id="mission-observations">0</strong></div>
+            <div><span>People</span><strong id="mission-people">0</strong></div>
+            <div><span>Route changes</span><strong id="mission-routes">0</strong></div>
+          </div>
+          <div id="discoveries" class="discovery-strip" aria-live="polite">
+            <div class="discovery-empty">
+              <span>✦</span>
+              <div><strong>No mission discoveries yet</strong><p>Start Explore mode to build a live visual mission log.</p></div>
+            </div>
+          </div>
+        </section>
+
         <section class="panel conversation-panel">
           <div class="panel-head conversation-head">
             <div>
@@ -228,7 +250,7 @@
             <input id="message" maxlength="1000" autocomplete="off" placeholder="Message AURUS…">
             <div class="composer-actions">
               <button id="listen" class="icon-button mic" title="Push to talk" aria-label="Push to talk"><span class="mic-icon"></span></button>
-              <button id="agent-cmd" class="button agent-btn" title="Execute with the MCP tool-calling agent"><span>⌁</span> Agent</button>
+              <button id="browser-mic" class="button browser-mic-btn" title="Toggle continuous browser microphone"><span>🎤</span> Browser Mic</button>
               <button id="send" class="button send-button" aria-label="Send message">Send <span>↗</span></button>
             </div>
           </div>

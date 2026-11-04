@@ -18,6 +18,9 @@ class MotionArbiter:
         hard_stop_cm: float = 20.0,
         caution_cm: float = 35.0,
         stale_after: float = 0.3,
+        front_sensor_enabled: bool = True,
+        degraded_hard_stop_cm: float = 45.0,
+        degraded_caution_cm: float = 75.0,
     ):
         self.driver = driver
         self.sensor_sampler = sensor_sampler
@@ -25,6 +28,9 @@ class MotionArbiter:
         self.hard_stop_cm = hard_stop_cm
         self.caution_cm = max(caution_cm, hard_stop_cm)
         self.stale_after = stale_after
+        self.front_sensor_enabled = bool(front_sensor_enabled)
+        self.degraded_hard_stop_cm = max(degraded_hard_stop_cm, hard_stop_cm)
+        self.degraded_caution_cm = max(degraded_caution_cm, self.degraded_hard_stop_cm)
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -154,8 +160,12 @@ class MotionArbiter:
         vx, vy, omega = command.vx, command.vy, command.omega
         reason = "allowed"
 
-        if vx > 0 and sensors.front_min < self.hard_stop_cm:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"front obstacle {sensors.front_min:.1f} cm")
+        front_clearance = sensors.navigation_front_min(self.front_sensor_enabled)
+        front_hard_stop = self.hard_stop_cm if self.front_sensor_enabled else self.degraded_hard_stop_cm
+        front_caution = self.caution_cm if self.front_sensor_enabled else self.degraded_caution_cm
+
+        if vx > 0 and front_clearance < front_hard_stop:
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"front obstacle {front_clearance:.1f} cm")
         if vx < 0 and sensors.rear_min < self.hard_stop_cm:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"rear obstacle {sensors.rear_min:.1f} cm")
         if vy < 0 and min(sensors.fl, sensors.rl) < self.hard_stop_cm:
@@ -163,9 +173,9 @@ class MotionArbiter:
         if vy > 0 and min(sensors.fr, sensors.rr) < self.hard_stop_cm:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "right-side obstacle")
 
-        if vx > 0 and sensors.front_min < self.caution_cm:
+        if vx > 0 and front_clearance < front_caution:
             vx *= 0.35
-            reason = f"forward speed limited at {sensors.front_min:.1f} cm"
+            reason = f"forward speed limited at {front_clearance:.1f} cm"
         elif vx < 0 and sensors.rear_min < self.caution_cm:
             vx *= 0.35
             reason = f"reverse speed limited at {sensors.rear_min:.1f} cm"

@@ -24,6 +24,7 @@ class MecanumDriver:
         self.is_simulation = IS_SIMULATION
         self.lock = threading.Lock()
         self.speed_multiplier = config.MOTOR_SPEED_MULTIPLIER
+        self.output_scale = config.MOTOR_OUTPUT_SCALE
         
         # Virtual simulation coordinates
         self.sim_x = 0.0  # in cm
@@ -58,6 +59,10 @@ class MecanumDriver:
                 raise
         else:
             print("--- RUNNING IN MOTOR SIMULATION MODE ---")
+        print(
+            f"[MotorDriver] vector multiplier={self.speed_multiplier:.2f}; "
+            f"uniform output scale={self.output_scale:.2f}"
+        )
             
         # Start a simulation coordinate updating thread
         self.running = True
@@ -141,14 +146,7 @@ class MecanumDriver:
 
     def _set_motor(self, in1, in2, pwm_ch, speed):
         # speed is from -1.0 to 1.0
-        val = abs(speed)
-        if val > 0.01:
-            # L298N voltage drop + mecanum static friction causes motor stalls below ~85% PWM duty cycle.
-            # Remap active speed commands into the effective working motor range (85 to 100 PWM duty cycle)
-            duty = int(85 + (val * 15))
-            duty = max(85, min(100, duty))
-        else:
-            duty = 0
+        duty = self._pwm_duty(speed)
 
         if speed > 0.01:
             if not self.is_simulation:
@@ -165,6 +163,18 @@ class MecanumDriver:
                 GPIO.output(in1, GPIO.LOW)
                 GPIO.output(in2, GPIO.LOW)
                 self.pwm_channels[pwm_ch].ChangeDutyCycle(0)
+
+    def _pwm_duty(self, speed):
+        """Apply one final output scale without changing wheel selection or direction."""
+        val = abs(speed)
+        if val > 0.01:
+            # L298N voltage drop + mecanum static friction causes motor stalls below ~85% PWM duty cycle.
+            # Remap active speed commands into the effective working motor range (85 to 100 PWM duty cycle)
+            duty = int(85 + (val * 15))
+            duty = max(85, min(100, duty))
+            return max(0, min(100, int(round(duty * self.output_scale))))
+        else:
+            return 0
 
     def set_speed_multiplier(self, multiplier):
         with self.lock:

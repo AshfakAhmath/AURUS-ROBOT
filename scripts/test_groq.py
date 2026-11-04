@@ -6,13 +6,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 api_key = os.getenv("GROQ_API_KEY")
-model_name = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+model_name = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-20b")
 
 if not api_key:
     print("ERROR: GROQ_API_KEY is not set in your .env file!")
     sys.exit(1)
 
-print(f"Testing Groq API Key: {api_key[:8]}...{api_key[-4:] if len(api_key) > 8 else ''}")
+print("Testing configured Groq API key...")
 print(f"Using Model: {model_name}")
 
 try:

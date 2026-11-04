@@ -6,9 +6,9 @@
 
 ## 1. Product definition
 
-AURUS is a persistent recognizing companion rover. It detects and enrolls a person, remembers their name and facts, recognizes them later, follows them with camera and ultrasonic safety, speaks locally, and exposes its real decisions through a live dashboard.
+AURUS is a persistent recognizing companion rover. It detects and enrolls a person, remembers their name and facts, greets people, explores with ultrasonic safety, speaks, and exposes its real decisions through a live dashboard.
 
-The system is offline-first. Internet access is not required for dialogue, motion, safety, identity, memory, speech recognition, TTS, or the evaluation showcase.
+Motion safety, identity, memory, local wake detection, and fallback speech remain local. Groq-backed dialogue, primary STT, and environment narration require Internet access.
 
 ### Showcase sequence
 
@@ -16,9 +16,9 @@ The system is offline-first. Internet access is not required for dialogue, motio
 2. AURUS enrolls or recognizes them and greets them by name.
 3. The person teaches AURUS a fact; SQLite stores it.
 4. AURUS recalls the fact without cloud access.
-5. Follow mode aligns to the face and maintains distance using the front sensor.
+5. Explore mode moves cautiously and narrates the camera view every 10–12 seconds.
 6. A physical obstacle causes a visible safety override.
-7. Push-to-talk or the wake word accepts a local command or a question for the local LLM.
+7. Push-to-talk or the browser/local wake word accepts a command or question for Groq.
 8. A deterministic mecanum showcase ends with all motors stopped.
 
 ## 2. Technology decisions
@@ -31,9 +31,9 @@ The system is offline-first. Internet access is not required for dialogue, motio
 | Vision | OpenCV YuNet + SFace | Small detection model, persistent embeddings, explicit unknown/uncertain states. |
 | Wake word | sherpa-onnx Zipformer KWS | Open-vocabulary, local AURUS detection with a small int8 model and no access key. |
 | Speech endpointing | sherpa-onnx Silero VAD | Stops on real utterance boundaries instead of a fixed recording timer. |
-| Speech recognition | Vosk small English model | Fully local and designed to run on Raspberry Pi. |
-| TTS | Piper; eSpeak NG fallback | Persistent local neural voice with a dependable executable fallback. |
-| Dialogue | Qwen2.5 1.5B Instruct Q4_K_M + llama.cpp | Apache-2.0 GGUF runs locally with bounded context/output and never makes motor decisions. |
+| Speech recognition | Groq Whisper; lazy Vosk fallback | Fast cloud transcription without blocking startup on a local model load. |
+| TTS | Edge TTS; Piper/eSpeak fallback | Neural voice when network and MP3 playback work, with local fallbacks. |
+| Dialogue | Groq GPT-OSS models | Chat and tool calls are cloud-hosted; all physical actions still pass through the arbiter. |
 | Persistence | SQLite | Local, transactional, zero external service dependency. |
 | Web | Flask-SocketIO with standard threading | Simple process model; browser assets are served locally. |
 
@@ -45,10 +45,9 @@ References:
 - [sherpa-onnx keyword spotting](https://k2-fsa.github.io/sherpa/onnx/kws/index.html)
 - [sherpa-onnx Silero VAD](https://k2-fsa.github.io/sherpa/onnx/vad/silero-vad.html)
 - [Piper local TTS](https://github.com/OHF-voice/piper1-gpl)
-- [Qwen2.5 1.5B Instruct GGUF](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF)
-- [llama-cpp-python](https://github.com/abetlen/llama-cpp-python)
+- [Groq supported models](https://console.groq.com/docs/models)
 - [Flask-SocketIO async choices](https://flask-socketio.readthedocs.io/en/stable/intro.html)
-The optional dashboard MCP agent remains separate from ordinary voice dialogue. Local voice conversation never requires a hosted provider.
+The same Groq service handles chat, intent routing, environment narration, and guarded MCP tool selection.
 
 ## 3. Runtime architecture
 
@@ -57,10 +56,10 @@ flowchart TD
     Dashboard[Minimal dashboard] --> Runtime[RobotRuntime]
     Microphone[USB microphone] --> Wake[sherpa KWS]
     Wake --> VAD[Silero VAD]
-    VAD --> Speech[Vosk STT]
+    VAD --> Speech[Groq Whisper or Vosk fallback]
     Speech --> Runtime
-    Runtime --> Conversation[Local intents then Qwen via llama.cpp]
-    Runtime --> TTS[Piper or eSpeak]
+    Runtime --> Conversation[Local safety intents then Groq router]
+    Runtime --> TTS[Edge TTS, Piper, or eSpeak]
 
     Camera[Picamera2] --> Vision[VisionService]
     Vision --> Identity[IdentityService]
@@ -86,7 +85,7 @@ flowchart TD
 - TTS requests are serialized through one queue.
 - A shared playback flag suspends and resets KWS/VAD while Piper or eSpeak is speaking.
 - SQLite operations use short-lived connections protected by a repository lock.
-- The local LLM returns speech text only and receives no hardware tools. The explicitly invoked dashboard MCP Agent may request an existing motion tool, but every such request is executed through `MotionArbiter` and remains subject to E-STOP, sensor freshness, proximity, deadman, mode-change, and dashboard-disconnection checks.
+- The Groq agent may request an existing motion tool, but every request is executed through `MotionArbiter` and remains subject to E-STOP, sensor freshness, proximity, deadman, mode-change, and dashboard-disconnection checks.
 - Importing a module never starts hardware or background threads.
 
 ## 4. Control and safety
@@ -103,9 +102,9 @@ Safety order:
 6. Distances below 20 cm are rejected; 20–35 cm limits translational speed.
 7. Only the safety-adjusted vector reaches the existing motor driver.
 
-Modes are `IDLE`, `MANUAL`, `LISTENING`, `FOLLOWING`, `EXPLORING`, `PERFORMING`, `ESTOP`, and `DEGRADED`. Mode changes stop the previous movement first. E-STOP requires an explicit clear operation.
+Modes are `IDLE`, `MANUAL`, `LISTENING`, `EXPLORING`, `PERFORMING`, `ESTOP`, and `DEGRADED`. Mode changes stop the previous movement first. E-STOP requires an explicit clear operation.
 
-Because the chassis has no wheel encoders, AURUS does not claim odometry, SLAM, or precise path navigation. Explore mode is reactive, and following uses current perception rather than an estimated global pose.
+Because the chassis has no wheel encoders, AURUS does not claim odometry, SLAM, or precise path navigation. Explore mode is reactive. If the center transducer is disabled, it uses slower movement, wider diagonal thresholds, and periodic sweeps; a working forward sensor remains the safest configuration.
 
 ## 5. Recognition and memory
 
@@ -123,19 +122,11 @@ The database contains `schema_version`, `Users`, `FaceEmbeddings`, `Memories`, `
 
 ## 6. Behavior and interaction
 
-Follow mode:
+Explore mode moves in short, slow segments, turns away before the configured caution boundary, and periodically sweeps the angled sensors. A single narration worker analyzes the camera every randomized 10–12 seconds. Face detections produce rate-limited known or unknown greetings.
 
-- Face horizontal error outside ±0.12 commands a bounded rotation.
-- When centered, front distance above 70 cm allows slow forward movement.
-- Distance below 45 cm requests slow reverse movement, subject to rear safety.
-- A 45–70 cm range is treated as reached.
-- Loss of the target stops after 500 ms, then allows a slow five-second search before returning to idle.
+Local commands include stop, E-STOP, clear E-STOP, explore, manual mode, status, enrollment, remember, recall, greeting, and showcase. Obvious actions route locally before ambiguous intent classification uses Groq.
 
-Local commands include stop, E-STOP, clear E-STOP, follow, explore, manual mode, status, enrollment, remember, recall, greeting, and showcase. All are processed before local LLM dialogue.
-
-The Qwen GGUF loads in a background thread. Inference is serialized, limited to a 2,048-token context and 96 generated tokens, and cleaned into at most 45 spoken words. Loading, timeout, malformed output, or model failure immediately produces a deterministic local personality response.
-
-Push-to-talk is always exposed. With `AURUS_WAKE_ENABLED=true`, the dedicated keyword model listens for “AURUS”, then Silero VAD captures one bounded utterance and Vosk transcribes it. Missing wake files disable only wake listening; missing Silero falls back to bounded adaptive energy endpointing.
+Push-to-talk uses one server-side microphone owner. Silero VAD captures a bounded utterance, Groq Whisper transcribes it, and Vosk loads only if the cloud request fails. With `AURUS_WAKE_ENABLED=true`, sherpa KWS can also listen locally. The browser provides a separate fuzzy wake option when its Web Speech API and microphone permission are available.
 
 ## 7. Public interface
 
@@ -177,17 +168,18 @@ Install system packages and create a system-package-aware virtual environment:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv python3-picamera2 python3-opencv python3-pyaudio portaudio19-dev espeak-ng build-essential cmake libopenblas-dev
+sudo apt install -y python3-venv python3-picamera2 python3-opencv python3-pyaudio portaudio19-dev espeak-ng mpg123
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
-CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS" pip install -r requirements-pi.txt
+pip install -r requirements-pi.txt
 python scripts/setup_models.py
-python scripts/setup_llm.py
 cp .env.example .env
+${EDITOR:-nano} .env
+python scripts/setup_llm.py
 python scripts/check_environment.py
 ```
 
-Model setup downloads all local voice models, creates the AURUS keyword file, and downloads the local Qwen GGUF. Set `MIC_INDEX` only when the USB microphone is not the system default. Then run:
+Model setup downloads local voice/vision fallbacks and creates the AURUS keyword file. `setup_llm.py` validates Groq configuration and downloads no model. Set `MIC_INDEX` only when automatic USB microphone selection fails. Then run:
 
 ```bash
 python run.py
@@ -201,14 +193,14 @@ Only after manual launch and repeated showcase testing succeed, adjust the user/
 
 | Failure | Result |
 |---|---|
-| Internet unavailable | All ordinary voice dialogue and robot features continue locally. |
-| Local LLM loading/unavailable | Deterministic commands continue and open-ended questions receive a local fallback response. |
-| Piper unavailable | eSpeak NG is selected; if that also fails, dashboard text remains. |
-| Vosk/microphone unavailable | Text input and dashboard controls remain. |
+| Internet unavailable | Safety, manual control, identity, memory, and local wake remain; Groq dialogue/narration are unavailable. |
+| Groq unavailable | Deterministic commands, text controls, and physical safety continue. |
+| Edge TTS unavailable | Piper or eSpeak NG is selected; if those also fail, dashboard text remains. |
+| Groq STT/microphone unavailable | Vosk is attempted when installed; text input and dashboard controls remain. |
 | Wake model unavailable | Push-to-talk remains available and health reports the wake error. |
 | Silero VAD unavailable | Adaptive energy endpointing is used and health reports the fallback backend. |
 | SFace model unavailable | Haar face detection and session identity remain; persistent recognition is marked unavailable. |
-| Camera unavailable | Manual and ultrasonic modes remain; follow is unavailable. |
+| Camera unavailable | Manual and ultrasonic exploration remain; narration and face greetings are unavailable. |
 | Database error | Motion safety remains independent; identity/memory report degraded. |
 | Dashboard disconnect | Active motion stops. |
 | Sensor stale/error | Motion stops. |
@@ -219,9 +211,8 @@ Only after manual launch and repeated showcase testing succeed, adjust the user/
 - E-STOP produces zero motion within 250 ms and remains latched.
 - Sensor staleness, target loss, dashboard disconnect, and expired commands stop motion.
 - A known person is recognized after process restart; unknown people are not assigned a stored name.
-- Follow mode respects the 20 cm hard-stop boundary and stops within 500 ms of losing the face.
 - Names and facts survive restart and are recalled offline.
-- Local LLM timeout, malformed output, or missing model produces a fallback response without affecting control.
+- Groq timeout, malformed output, or missing configuration does not affect motor safety.
 - Camera failure leaves manual/ultrasonic operation available.
 - Audio failure leaves text interaction available.
 - The browser receives no API key.

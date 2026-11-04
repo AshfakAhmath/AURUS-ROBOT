@@ -14,7 +14,6 @@ from src.hardware.motors import MecanumDriver
 from src.hardware.sensors import ProximitySensor
 from src.memory.repository import MemoryRepository
 from src.services.behavior_controller import BehaviorController
-from src.services.conversation_service import ConversationReply, ConversationService
 from src.services.identity_service import IdentityService
 from src.services.motion_arbiter import MotionArbiter
 from src.services.sensor_sampler import SensorSampler
@@ -23,6 +22,7 @@ from src.services.tts_service import TTSService
 from src import config
 from src.services.vision_service import VisionService
 from src.services.mcp_agent_service import MCPAgentService
+from src.services.groq_vision_service import GroqVisionService
 
 
 class RobotRuntime:
@@ -33,7 +33,12 @@ class RobotRuntime:
         self.repository = MemoryRepository(self.project_root / "aurus_memory.db")
         self.identity = IdentityService(self.repository)
         self.sensor_sampler = SensorSampler(self.sensor)
-        self.arbiter = MotionArbiter(self.driver, self.sensor_sampler)
+        front_sensor_enabled = os.getenv("AURUS_FRONT_SENSOR_ENABLED", "true").lower() == "true"
+        self.arbiter = MotionArbiter(
+            self.driver,
+            self.sensor_sampler,
+            front_sensor_enabled=front_sensor_enabled,
+        )
         self.vision = VisionService(self.identity, self.project_root / "models")
 
         microphone_index = os.getenv("MIC_INDEX")
@@ -71,30 +76,23 @@ class RobotRuntime:
             vad_model_path=model_path("VAD_MODEL_PATH", Path("models") / "silero_vad.onnx"),
             microphone_index=microphone_index_value,
             record_seconds=config.AURUS_RECORD_SECONDS,
-            speech_start_timeout=float_setting("AURUS_SPEECH_START_TIMEOUT", 4.0),
+            speech_start_timeout=float_setting("AURUS_SPEECH_START_TIMEOUT", 10.0),
             wake_enabled=os.getenv("AURUS_WAKE_ENABLED", "false").lower() == "true",
             playback_active=audio_playback,
         )
         self.tts = TTSService(
             model_path("PIPER_MODEL_PATH", Path("models") / "en_US-lessac-medium.onnx"),
             playback_active=audio_playback,
-        )
-        self.conversation = ConversationService(
-            model_path=model_path(
-                "LOCAL_LLM_MODEL_PATH",
-                Path("models") / "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-            ),
-            server_url=os.getenv("LOCAL_LLM_SERVER_URL", ""),
-            model=os.getenv("LOCAL_LLM_MODEL", "qwen2.5-1.5b-instruct"),
-            timeout=float_setting("LOCAL_LLM_TIMEOUT", 20.0),
-            context_size=int(float_setting("LOCAL_LLM_CONTEXT", 2048)),
-            max_tokens=int(float_setting("LOCAL_LLM_MAX_TOKENS", 96)),
-            threads=int(float_setting("LOCAL_LLM_THREADS", min(4, os.cpu_count() or 2))),
-        )
-        self.behavior = BehaviorController(
-            self.arbiter, self.sensor_sampler, self.vision, self._handle_behavior_event
+            voice=os.getenv("AURUS_TTS_VOICE", "en-US-GuyNeural"),
+            playback_device=os.getenv("ALSA_PLAYBACK_DEVICE", "").strip(),
         )
         self.mcp_agent = MCPAgentService(self)
+        self.groq_vision = GroqVisionService()
+        self.behavior = BehaviorController(
+            self.arbiter, self.sensor_sampler, self.vision,
+            self._handle_behavior_event, self.groq_vision,
+            playback_active=audio_playback,
+        )
         self._event_sink: Callable[[str, dict], None] = lambda event, payload: None
         self._started = False
         self._lock = threading.RLock()
@@ -120,9 +118,8 @@ class RobotRuntime:
             self.arbiter.start()
             self.vision.start()
             self.tts.start()
-            self.speech.start(lambda text: self.handle_text(text, source="wake"))
+            self.speech.start(self._wake_detected)
             self.behavior.start()
-            self.conversation.start()
             self.repository.log_event("runtime", "AURUS evaluation runtime started")
         except Exception:
             self.stop()
@@ -138,7 +135,6 @@ class RobotRuntime:
             ("emergency stop", lambda: self.arbiter.emergency_stop("runtime shutdown")),
             ("behavior", self.behavior.stop),
             ("speech", self.speech.stop),
-            ("local LLM", self.conversation.stop),
             ("vision", self.vision.stop),
             ("arbiter", self.arbiter.stop),
             ("sensor sampler", self.sensor_sampler.stop),
@@ -166,8 +162,6 @@ class RobotRuntime:
 
     def set_mode(self, value: str) -> bool:
         aliases = {
-            "follow": RobotMode.FOLLOWING,
-            "following": RobotMode.FOLLOWING,
             "explore": RobotMode.EXPLORING,
             "exploring": RobotMode.EXPLORING,
             "manual": RobotMode.MANUAL,
@@ -176,7 +170,15 @@ class RobotRuntime:
         mode = aliases.get(value.lower())
         if mode is None:
             return False
-        return self.arbiter.set_mode(mode)
+        previous = self.arbiter.mode
+        accepted = self.arbiter.set_mode(mode)
+        behavior = getattr(self, "behavior", None)
+        if accepted and behavior is not None:
+            if mode == RobotMode.EXPLORING:
+                behavior.begin_exploration()
+            elif previous == RobotMode.EXPLORING:
+                behavior.finish_exploration()
+        return accepted
 
     def manual_drive(self, vx: float, vy: float, omega: float, sequence: int) -> bool:
         with self._lock:
@@ -188,8 +190,12 @@ class RobotRuntime:
         return self.arbiter.command("dashboard-manual", vx, vy, omega, ttl=0.25, priority=50)
 
     def emergency_stop(self) -> None:
+        behavior = getattr(self, "behavior", None)
+        summary = behavior.finish_exploration(emit=False) if behavior is not None else None
         self.arbiter.emergency_stop()
         self.repository.log_event("estop", "Emergency stop activated")
+        if summary:
+            self.emit("mission_summary", summary)
         self.emit("system_health", self.health())
 
     def clear_estop(self) -> None:
@@ -198,7 +204,7 @@ class RobotRuntime:
 
     def start_enrollment(self, name: str):
         snapshot = self.vision.get_snapshot()
-        if snapshot.backend == "yunet+sface":
+        if "sface" in snapshot.backend:
             status = self.identity.begin_enrollment(name)
         elif snapshot.backend in ("haar-session-fallback", "video-only-fallback"):
             status = self.identity.begin_session_identity(name)
@@ -231,6 +237,65 @@ class RobotRuntime:
         if not started:
             self.arbiter.set_mode(RobotMode.IDLE)
         return started
+
+    def _wake_detected(self, _keyword: str = "AURUS") -> None:
+        """Acknowledge a local wake phrase, then open the command capture window."""
+        if not self.arbiter.set_mode(RobotMode.LISTENING):
+            self.speech.cancel_wake()
+            return
+        response = "I'm listening."
+        self.emit("conversation", {
+            "source": "wake",
+            "transcript": "Hey AURUS",
+            "response": response,
+            "provider": "local",
+            "fallback_reason": "",
+        })
+
+        def begin_capture() -> None:
+            if not self.speech.listen_once(self._speech_result):
+                self.speech.cancel_wake()
+                if self.arbiter.mode == RobotMode.LISTENING:
+                    self.arbiter.set_mode(RobotMode.IDLE)
+                self.emit("conversation", {
+                    "source": "wake",
+                    "transcript": "",
+                    "response": "I could not open the microphone command window.",
+                    "provider": "local",
+                    "fallback_reason": self.speech.error or "speech pipeline busy",
+                })
+
+        if not self.tts.speak(response, on_complete=begin_capture):
+            begin_capture()
+
+    def browser_wake_detected(self) -> bool:
+        """Acknowledge the browser wake phrase before arming its command window."""
+        if not self.arbiter.set_mode(RobotMode.LISTENING):
+            return False
+        response = "I'm listening."
+        self.emit("conversation", {
+            "source": "browser-mic",
+            "transcript": "Hey AURUS",
+            "response": response,
+            "provider": "local",
+            "fallback_reason": "",
+        })
+
+        def ready() -> None:
+            self.emit("browser_listen_ready", {"seconds": 10})
+
+        if not self.tts.speak(response, on_complete=ready):
+            ready()
+        return True
+
+    def browser_listening_finished(self) -> None:
+        if self.arbiter.mode == RobotMode.LISTENING:
+            self.arbiter.set_mode(RobotMode.IDLE)
+
+    def handle_browser_speech(self, text: str) -> dict:
+        result = self.handle_text(text, source="browser-mic")
+        self.browser_listening_finished()
+        return result
 
     def _speech_result(self, text: str, error: str | None) -> None:
         if error or not text:
@@ -285,11 +350,45 @@ class RobotRuntime:
         if "emergency stop" in lower or re.search(r"\be[\s-]?stop\b", lower):
             self.emergency_stop()
             return self._announce("Emergency stop activated and latched.", source, clean, "local")
-        if lower in ("stop", "halt", "freeze") or "stop following" in lower or "stop exploring" in lower:
+        if (
+            lower in ("stop", "halt", "freeze")
+            or "stop exploring" in lower
+            or "stop and summarize" in lower
+            or "stop and summarise" in lower
+        ):
+            was_exploring = self.arbiter.mode == RobotMode.EXPLORING
             self.arbiter.halt("voice-stop")
             if not self.arbiter.estopped:
                 self.arbiter.set_mode(RobotMode.IDLE)
+            behavior = getattr(self, "behavior", None)
+            summary = (
+                behavior.finish_exploration(emit=False)
+                if was_exploring and behavior is not None else None
+            )
+            if summary:
+                self.emit("mission_summary", summary)
+                return self._announce(summary["text"], source, clean, "local")
             return self._announce("Stopped safely.", source, clean, "local")
+
+        if any(phrase in lower for phrase in (
+            "what have you found", "mission status", "exploration status",
+            "summarize the mission", "summarise the mission",
+        )):
+            behavior = getattr(self, "behavior", None)
+            mission = behavior.mission_snapshot() if behavior is not None else {}
+            if not mission.get("mission_id"):
+                return self._announce("I have not started an exploration mission yet.", source, clean, "local")
+            state = "So far" if mission.get("active") else "In my latest mission"
+            observations = mission.get("observations", 0)
+            people = mission.get("people", 0)
+            routes = mission.get("route_changes", 0)
+            response = (
+                f"{state}, I recorded {observations} "
+                f"{'discovery' if observations == 1 else 'discoveries'}, encountered "
+                f"{people} {'person' if people == 1 else 'people'}, and changed route "
+                f"{routes} {'time' if routes == 1 else 'times'}."
+            )
+            return self._announce(response, source, clean, "local")
 
         name_match = re.search(r"(?:my name is|call me)\s+([a-z][a-z .'-]{0,60})", clean, re.IGNORECASE)
         if name_match:
@@ -313,47 +412,97 @@ class RobotRuntime:
                 response = f"I recognize you as {person.name}, but you have not taught me a fact yet."
             return self._announce(response, source, clean, "local")
 
+        visual_questions = (
+            "what do you see",
+            "what can you see",
+            "describe the environment",
+            "describe my surroundings",
+            "describe your surroundings",
+            "what is in front of you",
+            "look at the environment",
+            "look around and describe",
+        )
+        if any(phrase in lower for phrase in visual_questions):
+            snapshot = self.vision.get_snapshot()
+            if not snapshot.healthy or snapshot.age > 1.0:
+                return self._announce(
+                    "I do not have a fresh camera image to describe.",
+                    source, clean, "local", snapshot.error or "camera frame unavailable",
+                )
+            vision_provider = getattr(self, "groq_vision", None)
+            if vision_provider is None or not vision_provider.ready:
+                return self._announce(
+                    "Groq vision is currently unavailable.",
+                    source, clean, "local", getattr(vision_provider, "error", "Groq unavailable"),
+                )
+            description = vision_provider.describe(self.vision.get_jpeg())
+            if not description:
+                return self._announce(
+                    "I could not analyze the current camera image.",
+                    source, clean, "groq-vision", vision_provider.error or "vision request failed",
+                )
+            return self._announce(description, source, clean, "groq-vision")
+
         remember_match = re.search(r"(?:remember that|remember)\s+(.+)", clean, re.IGNORECASE)
         if remember_match:
             ok, response = self.remember_fact(remember_match.group(1).strip())
             return self._announce(response, source, clean, "local", "" if ok else "identity required")
 
-        if "follow me" in lower or lower == "follow":
-            if self.arbiter.set_mode(RobotMode.FOLLOWING):
-                return self._announce("Follow mode engaged. I will keep you centered and respect my safety sensors.", source, clean, "local")
         if "explore" in lower:
-            if self.arbiter.set_mode(RobotMode.EXPLORING):
-                return self._announce("Exploration mode engaged. My ultrasonic safety layer remains in control.", source, clean, "local")
+            if self.set_mode("explore"):
+                return self._announce(
+                    "Curiosity mission started. I will explore safely, explain route changes, and report meaningful discoveries.",
+                    source, clean, "local",
+                )
         if "manual mode" in lower or "take control" in lower:
-            self.arbiter.set_mode(RobotMode.MANUAL)
+            self.set_mode("manual")
             return self._announce("Manual mode ready.", source, clean, "local")
         if any(phrase in lower for phrase in ("show me what you can do", "showcase", "dance")):
             started = self.behavior.start_showcase()
             return self._announce("Beginning the mecanum showcase." if started else "A showcase is already running.", source, clean, "local")
         if "status" in lower or "how are your systems" in lower:
             sensors = self.sensor_sampler.get_snapshot()
-            response = f"Systems checked. Front clearance is {sensors.front_min:.0f} centimetres. Current mode is {self.arbiter.mode.value}."
+            clearance = sensors.navigation_front_min(self.arbiter.front_sensor_enabled)
+            response = f"Systems checked. Navigation clearance is {clearance:.0f} centimetres. Current mode is {self.arbiter.mode.value}."
             return self._announce(response, source, clean, "local")
         if any(word in lower for word in ("hello", "hi aurus", "hey aurus")):
             person = self._current_person()
             name = f", {person.name}" if person.name else ""
-            return self._announce(f"Hello{name}! My local systems are ready.", source, clean, "local")
+            return self._announce(f"Hello{name}! AURUS is ready.", source, clean, "local")
 
+        # Agentic Router: Decide whether this requires the MCP Agent or just conversational chat
         person = self._current_person()
         memories = self.repository.memories_for(person.user_id) if person.user_id else []
-        reply: ConversationReply = self.conversation.reply(
-            clean,
-            user_name=person.name,
-            memories=memories,
-            recent_interactions=self.repository.recent_interactions(),
-        )
-        return self._announce(reply.text, source, clean, reply.provider, reply.fallback_reason)
+
+        if getattr(self, "mcp_agent", None) and getattr(self.mcp_agent, "ready", False):
+            intent = self.mcp_agent.route_intent(clean)
+            if intent == "ACTION":
+                # Full tool-calling loop (moves robot, controls sensors, etc.)
+                return self.mcp_agent.execute_command(clean)
+            else:
+                # Fast Groq-powered chat without tool latency
+                response_text = self.mcp_agent.chat(clean, person.name, memories)
+                return self._announce(response_text, source, clean, "groq-chat")
+
+
+        return self._announce("My cloud intelligence is currently offline.", source, clean, "local")
 
     def _handle_behavior_event(self, event: str, payload: dict) -> None:
         if event == "greeting":
             self._announce(f"Welcome back, {payload['name']}! I recognize you.", "vision", "", "local")
+        elif event == "greeting_unknown":
+            self._announce("Hello there! I see you, but I don't know your name yet. You can say 'my name is' to introduce yourself.", "vision", "", "local")
         elif event == "behavior_notice":
-            self._announce(payload.get("text", ""), "behavior", "", "local")
+            self._announce(
+                payload.get("text", ""), "behavior", "",
+                payload.get("provider", "local"),
+            )
+        elif event == "mission_summary":
+            self.emit(event, payload)
+            if not self.arbiter.estopped:
+                self._announce(payload.get("text", "Exploration complete."), "behavior", "", "local")
+        elif event in ("discovery", "mission_update"):
+            self.emit(event, payload)
         else:
             self.emit(event, payload)
 
@@ -363,11 +512,16 @@ class RobotRuntime:
         return {
             "runtime": self._started,
             "motors": True,
+            "motor_vector_multiplier": self.driver.speed_multiplier,
+            "motor_output_scale": self.driver.output_scale,
             "sensors": sensors.healthy and not sensors.is_stale(),
             "camera": vision.healthy,
             "vision_backend": vision.backend,
+            "camera_error": vision.error,
             "microphone": self.speech.healthy,
             "microphone_error": self.speech.error,
+            "microphone_name": self.speech.selected_microphone_name,
+            "microphone_index": self.speech.selected_microphone_index,
             "stt_backend": self.speech.stt_backend,
             "vad_backend": self.speech.vad_backend,
             "vad_error": self.speech.vad_error,
@@ -378,15 +532,22 @@ class RobotRuntime:
             "tts": self.tts.healthy,
             "tts_backend": self.tts.backend,
             "tts_error": self.tts.error,
+            "tts_voice": self.tts.voice,
+            "tts_playback_device": self.tts.playback_device or "default",
+            "tts_volume_percent": self.tts.volume_percent,
+            "tts_gain_db": self.tts.gain_db,
             "audio_playback": self.tts.playback_active.is_set(),
             "database": True,
-            "llm": self.conversation.ready,
-            "llm_loading": self.conversation.loading,
-            "llm_backend": self.conversation.backend,
-            "llm_error": self.conversation.last_error,
-            "cloud": False,
-            "cloud_error": "local LLM selected for dialogue",
+            "llm": self.mcp_agent.ready,
+            "llm_loading": False,
+            "llm_backend": f"groq:{self.mcp_agent.model}" if self.mcp_agent.ready else "unavailable",
+            "llm_error": self.mcp_agent.error,
+            "cloud": self.mcp_agent.ready,
+            "cloud_error": self.mcp_agent.error,
             "mcp_agent": self.mcp_agent.ready,
+            "groq_vision": self.groq_vision.ready,
+            "groq_vision_model": self.groq_vision.model,
+            "groq_vision_error": self.groq_vision.error,
             "estop": self.arbiter.estopped,
         }
 
@@ -398,5 +559,6 @@ class RobotRuntime:
             "motion": self.arbiter.get_decision().as_dict(),
             "vision": self.vision.get_snapshot().as_dict(),
             "enrollment": self.identity.get_enrollment().as_dict(),
+            "mission": self.behavior.mission_snapshot(),
             "health": self.health(),
         }

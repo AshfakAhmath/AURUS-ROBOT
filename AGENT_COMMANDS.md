@@ -1,8 +1,10 @@
 # AURUS MCP Agent Commands Guide
 
-The Groq MCP Agent is a cloud-based AI brain that translates your natural language into hardware actions. Because it's an AI, you don't need to use exact syntax—you can talk to it naturally! 
+AURUS uses an intelligent Agentic Router powered by Groq. You don't need to use exact syntax—you can talk to it completely naturally via text or voice!
 
-Here are the primary commands and capabilities you can test in the dashboard chat:
+The system will automatically figure out if you want to **CHAT** (casual conversation) or **ACT** (move, scan, explore, remember).
+
+Here are the primary commands and capabilities you can test in the dashboard or via voice:
 
 ## 🧭 Movement & Navigation
 *(Note: Since your rear wheels are identical to the front wheels, "strafing" sideways won't work, but forward/backward and spinning will work perfectly!)*
@@ -10,7 +12,6 @@ Here are the primary commands and capabilities you can test in the dashboard cha
 * **Drive Forward/Backward:**
   * *"Move forward for 3 seconds"*
   * *"Drive backward slowly"*
-  * *"Go straight"*
 * **Spinning (Turning):**
   * *"Turn left"*
   * *"Spin around to the right for 2 seconds"*
@@ -18,44 +19,42 @@ Here are the primary commands and capabilities you can test in the dashboard cha
   * *"Stop!"*
   * *"Halt all motors"*
 
-## 🦇 Sensors & Spatial Awareness
+## 🦇 Sensors & Autonomous Exploration
 * **Distance Checks:**
   * *"Check your sensors"*
   * *"Is the path clear in front of you?"*
-  * *"Read ultrasonic distances"*
+* **Exploration:**
+  * *"Explore the room!"*
+  * *(During exploration, AURUS will autonomously look around and narrate what it sees using Groq-hosted vision.)*
 
 ## 👁️ Vision & Camera
 * **Person Detection:**
   * *"Look forward, do you see anyone?"*
   * *"Who is in front of you?"*
-  * *"Check the camera feed"*
 
-## 🗣️ Speech (Text-to-Speech)
-* **Talking:**
-  * *"Say hello to the guests"*
-  * *"Introduce yourself as AURUS"*
-  * *"Tell me a quick joke"*
+## 🗣️ Speech & Identity
+* **Conversational Chat (Powered by Groq GPT-OSS & Whisper STT):**
+  * *"Hey AURUS, what does your name stand for?"*
+  * *"Introduce yourself!"*
+  * *"Tell me about your hardware components"*
 
-## 🧠 Memory (SQLite Database)
+## 🧠 Persistent Memory (SQLite Database)
 *(Requires a recognized person/user ID first)*
 * **Remembering:**
   * *"Remember that my favorite color is blue"*
   * *"Store a fact: I am the creator"*
 * **Recalling:**
   * *"What do you remember about me?"*
-  * *"Recall my facts"*
 
 ## 📊 System Status & Health
 * **Diagnostics:**
   * *"What is your current status?"*
   * *"Check your system health"*
-  * *"What mode are you currently in?"*
 
 ## 🎭 Animations & Expressions
 * **Physical Emotes:**
   * *"Do a happy wiggle"*
   * *"Shiver"* (Scared/Cold)
-  * *"Do a curious spin"*
 
 ---
 ### 💡 Pro Tip for Testing:

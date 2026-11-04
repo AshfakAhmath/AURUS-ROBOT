@@ -64,6 +64,15 @@ MOTOR_STRAFE_DIR = int(os.getenv("MOTOR_STRAFE_DIR", "1"))  # Normal (1)
 # Global motor driver speed scaling (torque/power) multiplier
 MOTOR_SPEED_MULTIPLIER = float(os.getenv("MOTOR_SPEED_MULTIPLIER", "1.0"))
 
+# Final PWM scaling is deliberately separate from mecanum vector scaling. Keep
+# MOTOR_SPEED_MULTIPLIER at 1.0; this value uniformly scales every active wheel
+# after direction and wheel mixing have already been calculated.
+try:
+    MOTOR_OUTPUT_SCALE = float(os.getenv("MOTOR_OUTPUT_SCALE", "1.0"))
+except ValueError:
+    MOTOR_OUTPUT_SCALE = 1.0
+MOTOR_OUTPUT_SCALE = max(0.5, min(1.0, MOTOR_OUTPUT_SCALE))
+
 
 # Motor channel swap helpers (to fix accidentally swapped front/rear wires in software)
 MOTOR_SWAP_FL_RL = os.getenv("MOTOR_SWAP_FL_RL", "false").lower() == "true"
@@ -111,7 +120,7 @@ PROXIMITY_ALARM_CM = 15.0
 PROXIMITY_ALERT_CM = 40.0
 
 # --- Drive Mode Constants ---
-DRIVE_MODES = ["manual", "autonomous", "voice_command", "mode_follow"]
+DRIVE_MODES = ["manual", "autonomous", "voice_command"]
 DEFAULT_DRIVE_MODE = "manual"
 
 # Autonomous exploration settings

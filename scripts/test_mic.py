@@ -9,31 +9,36 @@ if str(ROOT) not in sys.path:
 try:
     import pyaudio
 except ImportError:
-    print("ERROR: PyAudio is not installed. Install it using: pip install pyaudio")
-    sys.exit(1)
+    pyaudio = None
 
 def main():
-    p = pyaudio.PyAudio()
-    numdevices = p.get_device_count()
-    
+    p = pyaudio.PyAudio() if pyaudio is not None else None
+
     print("=========================================================")
     print("                AVAILABLE AUDIO DEVICES                  ")
     print("=========================================================")
-    
+
     input_devices = []
-    for i in range(0, numdevices):
-        dev_info = p.get_device_info_by_index(i)
-        if dev_info.get('maxInputChannels') > 0:
-            print(f"Device ID {i}: {dev_info.get('name')} (Max Input Channels: {dev_info.get('maxInputChannels')})")
-            input_devices.append(i)
+    if p is not None:
+        for i in range(0, p.get_device_count()):
+            dev_info = p.get_device_info_by_index(i)
+            if dev_info.get('maxInputChannels') > 0:
+                print(f"PyAudio ID {i}: {dev_info.get('name')} (inputs: {dev_info.get('maxInputChannels')})")
+                input_devices.append(i)
+    else:
+        print("PyAudio is unavailable; the ALSA arecord fallback will be tested.")
+
+    import shutil
+    import subprocess
+
+    if shutil.which("arecord"):
+        listing = subprocess.run(
+            ["arecord", "-l"], capture_output=True, text=True, timeout=5, check=False
+        ).stdout.strip()
+        print("\nALSA capture devices:\n" + (listing or "none reported"))
             
     print("=========================================================\n")
     
-    if not input_devices:
-        print("ERROR: No input audio devices (microphones) found!")
-        p.terminate()
-        sys.exit(1)
-        
     # Get MIC_INDEX from environment
     from dotenv import load_dotenv
     load_dotenv()
@@ -45,7 +50,7 @@ def main():
             print(f"Current MIC_INDEX in .env: {device_index}")
         except ValueError:
             print(f"Warning: Invalid MIC_INDEX in .env: '{mic_idx}'. Defaulting to auto-selection.")
-            device_index = input_devices[0]
+            device_index = None
     else:
         print("No MIC_INDEX set in .env. AURUS will prefer a physical USB microphone.")
         device_index = None
@@ -66,7 +71,8 @@ def main():
             frames.append(data)
             
         stream.close()
-        p.terminate()
+        if p is not None:
+            p.terminate()
         
         # Calculate volume
         import numpy as np
@@ -85,7 +91,8 @@ def main():
             
     except Exception as e:
         print(f"\nERROR opening microphone stream: {e}")
-        p.terminate()
+        if p is not None:
+            p.terminate()
         sys.exit(1)
 
 if __name__ == "__main__":

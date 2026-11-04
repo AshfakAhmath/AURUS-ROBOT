@@ -12,6 +12,7 @@ sentencepiece>=0.2,<1
 pypinyin>=0.50,<1
 piper-tts>=1.4,<2
 mcp>=1.0.0,<2.0.0
+edge-tts>=7.0.0
 
 opencv-python>=4.8,<5; platform_system == "Windows"
 PyAudio>=0.2.13; platform_system == "Windows"

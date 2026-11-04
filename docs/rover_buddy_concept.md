@@ -1,4 +1,6 @@
-# RoverBuddy (AURUS V2) — AI Pet Companion & Assistant
+# RoverBuddy (AURUS V2) — Historical Concept
+
+> Historical design only. Follow mode described below was removed from the current evaluation runtime.
 > **A lively, expressive desktop companion powered by Raspberry Pi 4B, Mecanum wheels, Computer Vision, and the Gemini API.**
 
 ---

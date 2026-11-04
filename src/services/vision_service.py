@@ -30,17 +30,25 @@ class VisionService:
         camera_index: int = 0,
         process_size: tuple[int, int] = (320, 256),
         rate_hz: float = 10.0,
+        detection_threshold: float | None = None,
     ):
         self.identity_service = identity_service
         self.model_dir = Path(model_dir)
         self.camera_index = camera_index
         self.width, self.height = process_size
         self.period = 1.0 / max(1.0, rate_hz)
+        if detection_threshold is None:
+            try:
+                detection_threshold = float(os.getenv("AURUS_FACE_DETECTION_THRESHOLD", "0.65"))
+            except ValueError:
+                detection_threshold = 0.65
+        self.detection_threshold = max(0.3, min(0.95, detection_threshold))
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._camera = None
         self._camera_kind = "none"
+        self._camera_format = ""
         self._detector = None
         self._recognizer = None
         self._haar = None
@@ -75,11 +83,27 @@ class VisionService:
             raise RuntimeError("OpenCV is not installed")
         yunet = self.model_dir / "face_detection_yunet_2023mar.onnx"
         sface = self.model_dir / "face_recognition_sface_2021dec.onnx"
-        if yunet.exists() and sface.exists() and hasattr(cv2, "FaceDetectorYN") and hasattr(cv2, "FaceRecognizerSF"):
-            self._detector = cv2.FaceDetectorYN.create(str(yunet), "", (self.width, self.height), 0.85, 0.3, 5000)
-            self._recognizer = cv2.FaceRecognizerSF.create(str(sface), "")
-            self._backend = "yunet+sface"
-            return
+        self._detector = None
+        self._recognizer = None
+
+        # Load recognition independently. Some Raspberry Pi OS OpenCV builds
+        # cannot execute the current YuNet graph but can still run SFace.
+        if sface.exists() and hasattr(cv2, "FaceRecognizerSF"):
+            try:
+                self._recognizer = cv2.FaceRecognizerSF.create(str(sface), "")
+            except Exception as exc:
+                print(f"[VisionService] SFace could not be loaded: {exc}")
+
+        if yunet.exists() and hasattr(cv2, "FaceDetectorYN"):
+            try:
+                self._detector = cv2.FaceDetectorYN.create(
+                    str(yunet), "", (self.width, self.height),
+                    self.detection_threshold, 0.3, 5000,
+                )
+                self._backend = "yunet+sface" if self._recognizer is not None else "yunet-only"
+                return
+            except Exception as exc:
+                print(f"[VisionService] YuNet could not be loaded: {exc}")
 
         if self._configure_haar():
             return
@@ -106,7 +130,11 @@ class VisionService:
             if path.exists():
                 self._haar = cv2.CascadeClassifier(str(path))
                 if not self._haar.empty():
-                    self._backend = "haar-session-fallback"
+                    self._backend = (
+                        "haar+sface-fallback"
+                        if self._recognizer is not None
+                        else "haar-session-fallback"
+                    )
                     return True
         return False
 
@@ -115,22 +143,30 @@ class VisionService:
             camera = None
             try:
                 camera = Picamera2()
-                try:
-                    config = camera.create_video_configuration(main={"size": (640, 480), "format": "RGB888"})
-                    camera.configure(config)
-                except Exception:
+                configuration_error = None
+                for builder in (camera.create_video_configuration, camera.create_preview_configuration):
                     try:
-                        config = camera.create_preview_configuration(main={"size": (640, 480), "format": "RGB888"})
+                        # Picamera2's RGB888 is stored B, G, R in memory, which
+                        # is already the channel order OpenCV expects.
+                        config = builder(main={"size": (640, 480), "format": "RGB888"})
                         camera.configure(config)
-                    except Exception:
-                        config = camera.create_video_configuration(main={"size": (640, 480)})
-                        camera.configure(config)
+                        configuration_error = None
+                        break
+                    except Exception as exc:
+                        configuration_error = exc
+                if configuration_error is not None:
+                    raise configuration_error
+                try:
+                    camera.set_controls({"AwbEnable": True})
+                except Exception as exc:
+                    print(f"[VisionService] Automatic white balance could not be enabled: {exc}")
                 camera.start()
                 time.sleep(0.5)
-                rgb = camera.capture_array("main")
-                if rgb is not None and rgb.size > 0:
+                frame = camera.capture_array("main")
+                if frame is not None and frame.size > 0:
                     self._camera = camera
                     self._camera_kind = "picamera2"
+                    self._camera_format = "RGB888"
                     print("[VisionService] Raspberry Pi CSI camera connected via Picamera2.")
                     return
                 else:
@@ -192,6 +228,7 @@ class VisionService:
         self._camera = None
         camera_kind = self._camera_kind
         self._camera_kind = "none"
+        self._camera_format = ""
         if camera is None:
             return
         try:
@@ -206,16 +243,32 @@ class VisionService:
     def _read_frame(self):
         try:
             if self._camera_kind == "picamera2":
-                rgb = self._camera.capture_array("main")
-                if rgb is None or rgb.size == 0:
+                frame = self._camera.capture_array("main")
+                if frame is None or frame.size == 0:
                     return None
-                if len(rgb.shape) == 3 and rgb.shape[2] == 4:
-                    return cv2.cvtColor(rgb, cv2.COLOR_RGBA2BGR)
-                return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                return self._picamera_array_to_bgr(frame, self._camera_format)
             ok, frame = self._camera.read()
             return frame if (ok and frame is not None and frame.size > 0) else None
         except Exception:
             return None
+
+    @staticmethod
+    def _picamera_array_to_bgr(frame, pixel_format: str):
+        """Convert Picamera2's counterintuitively named formats to OpenCV BGR."""
+        fmt = str(pixel_format).upper()
+        if frame.ndim != 3:
+            return frame
+        if frame.shape[2] == 3:
+            # Picamera2 RGB888 memory is BGR; BGR888 memory is RGB.
+            if fmt == "BGR888":
+                return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            return np.ascontiguousarray(frame)
+        if frame.shape[2] == 4:
+            # XRGB8888 memory is B,G,R,A; XBGR8888 is R,G,B,A.
+            if fmt == "XBGR8888":
+                return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            return np.ascontiguousarray(frame[:, :, :3])
+        raise ValueError(f"Unsupported Picamera2 frame shape: {frame.shape}")
 
     def _detect(self, frame):
         resized = cv2.resize(frame, (self.width, self.height))
@@ -235,7 +288,6 @@ class VisionService:
                     )
                     self._dnn_fallback_reported = True
                 self._detector = None
-                self._recognizer = None
                 if not self._configure_haar():
                     self._backend = "video-only-fallback"
                 return self._detect(frame)
@@ -250,10 +302,31 @@ class VisionService:
                 detections.append((int(x), int(y), int(w), int(h), 1.0, None))
         return resized, detections
 
-    def _embedding(self, frame, raw_face):
-        if self._recognizer is None or raw_face is None:
+    def _embedding(self, frame, raw_face, box):
+        if self._recognizer is None:
             return None
-        aligned = self._recognizer.alignCrop(frame, raw_face)
+        if raw_face is not None:
+            aligned = self._recognizer.alignCrop(frame, raw_face)
+        else:
+            # Haar does not provide eye/nose landmarks for alignCrop. Preserve
+            # recognition by using a padded, square 112x112 face crop. It is
+            # less precise than YuNet alignment but remains persistent SFace,
+            # not a session-only name association.
+            x, y, w, h = box
+            padding = int(max(w, h) * 0.12)
+            x1 = max(0, x - padding)
+            y1 = max(0, y - padding)
+            x2 = min(frame.shape[1], x + w + padding)
+            y2 = min(frame.shape[0], y + h + padding)
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                return None
+            side = max(crop.shape[:2])
+            square = np.zeros((side, side, 3), dtype=crop.dtype)
+            top = (side - crop.shape[0]) // 2
+            left = (side - crop.shape[1]) // 2
+            square[top:top + crop.shape[0], left:left + crop.shape[1]] = crop
+            aligned = cv2.resize(square, (112, 112))
         return np.asarray(self._recognizer.feature(aligned), dtype=np.float32).reshape(-1)
 
     def process_frame(self, frame) -> VisionSnapshot:
@@ -268,7 +341,7 @@ class VisionService:
             x, y, w, h, _, raw = detections[0]
             center_x = (x + w / 2) / self.width
             primary_width = w / self.width
-            embedding = self._embedding(resized, raw)
+            embedding = self._embedding(resized, raw, (x, y, w, h))
             if self._recognizer is not None:
                 identity = self.identity_service.process_embedding(embedding)
             else:

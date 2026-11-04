@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import threading
@@ -101,7 +100,7 @@ AURUS_MCP_TOOLS = [
         "type": "function",
         "function": {
             "name": "capture_image",
-            "description": "Capture a photo from the camera and check vision target identity.",
+            "description": "Analyze the current camera photo to describe visible surroundings and check face identity.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -178,15 +177,21 @@ class MCPAgentService:
     def __init__(self, runtime: Any, api_key: str | None = None, model: str | None = None):
         self.runtime = runtime
         self.api_key = api_key or os.getenv("GROQ_API_KEY", "")
-        # Llama 3.3 70B Versatile is currently Groq's best tool-calling model
-        self.model = model or os.getenv("GROQ_AGENT_MODEL", "llama-3.3-70b-versatile")
+        self.model = model or os.getenv("GROQ_AGENT_MODEL", "openai/gpt-oss-120b")
+        self.chat_model = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-20b")
+        self.router_model = os.getenv("GROQ_ROUTER_MODEL", self.chat_model)
         self._client = None
+        self.error = ""
         self._execution_lock = threading.Lock()
         if self.api_key and Groq is not None:
             try:
                 self._client = Groq(api_key=self.api_key, timeout=15.0, max_retries=1)
             except Exception as exc:
-                print(f"[MCPAgentService] Initialization warning: {exc}")
+                self.error = f"Groq client initialization failed: {str(exc)[:180]}"
+        elif Groq is None:
+            self.error = "groq SDK is not installed"
+        else:
+            self.error = "GROQ_API_KEY is not configured"
 
     @property
     def ready(self) -> bool:
@@ -241,9 +246,11 @@ class MCPAgentService:
 
         system_prompt = (
             "You are the autonomous cloud AI brain controlling AURUS, a 4-wheel mecanum rover with "
-            "5 ultrasonic sensors, a camera, text-to-speech, and persistent SQLite memory. "
+            "ultrasonic sensors, a camera, text-to-speech, and persistent SQLite memory. "
             "When given a goal, invoke the appropriate tools to accomplish it safely. "
             "Always check sensors if safety or obstacles are mentioned. Keep verbal speech concise and warm. "
+            "For any question about what you see or the environment, call capture_image and report its "
+            "description without inventing or adding visual details. "
             "IMPORTANT: Always use native JSON tool calls. NEVER output raw <function> tags in your response text. "
             "If the user just says 'hi', use the speak_text tool to greet them."
         )
@@ -256,6 +263,7 @@ class MCPAgentService:
         iterations = 0
         max_iterations = 6
         final_summary = ""
+        spoke_during_run = False
 
 
         try:
@@ -267,7 +275,8 @@ class MCPAgentService:
                     tools=AURUS_MCP_TOOLS,
                     tool_choice="auto",
                     temperature=0.2,
-                    max_tokens=500,
+                    max_completion_tokens=700,
+                    reasoning_effort="low",
                 )
 
                 response_message = completion.choices[0].message
@@ -314,6 +323,11 @@ class MCPAgentService:
 
                     # Execute tool against live runtime
                     result_json = self._dispatch_tool(fn_name, args)
+                    if fn_name == "speak_text":
+                        try:
+                            spoke_during_run = json.loads(result_json).get("status") == "ok"
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            pass
 
                     # Parse result for clean UI
                     try:
@@ -370,6 +384,9 @@ class MCPAgentService:
             if not final_summary:
                 final_summary = f"Completed agent execution sequence after {iterations} turns."
 
+            if not spoke_during_run:
+                self.runtime.tts.speak(final_summary)
+
             self.runtime.emit(
                 "conversation",
                 {
@@ -383,30 +400,18 @@ class MCPAgentService:
             return {"status": "ok", "summary": final_summary, "turns": iterations}
 
         except Exception as exc:
-                print(f"[MCPAgentService] Initialization warning: {exc}")
-
-    @property
-    def ready(self) -> bool:
-        return self._client is not None
-
-    def execute_command(self, user_command: str) -> dict:
-        if not self._execution_lock.acquire(blocking=False):
-            msg = "The MCP Agent is already executing a command. Stop it or wait for it to finish."
+            self.error = f"Groq agent request failed: {str(exc)[:180]}"
             self.runtime.emit(
                 "conversation",
                 {
                     "source": "agent",
-                    "transcript": user_command,
-                    "response": msg,
-                    "provider": "local",
-                    "fallback_reason": "agent busy",
+                    "transcript": "",
+                    "response": "My cloud request failed. Check the Groq key, network, model settings, and rate limits.",
+                    "provider": "groq-mcp",
+                    "fallback_reason": self.error,
                 },
             )
-            return {"status": "error", "message": msg}
-        try:
-            return self._execute_command(user_command)
-        finally:
-            self._execution_lock.release()
+            return {"status": "error", "message": self.error}
 
     def _execute_motion_sequence(
         self,
@@ -457,12 +462,12 @@ class MCPAgentService:
                 direction_map = {
                     "forward": (speed, 0.0, 0.0),
                     "backward": (-speed, 0.0, 0.0),
-                    "left": (0.0, speed, 0.0),
-                    "right": (0.0, -speed, 0.0),
-                    "forward_left": (speed, speed, 0.0),
-                    "forward_right": (speed, -speed, 0.0),
-                    "backward_left": (-speed, speed, 0.0),
-                    "backward_right": (-speed, -speed, 0.0),
+                    "left": (0.0, -speed, 0.0),
+                    "right": (0.0, speed, 0.0),
+                    "forward_left": (speed, -speed, 0.0),
+                    "forward_right": (speed, speed, 0.0),
+                    "backward_left": (-speed, -speed, 0.0),
+                    "backward_right": (-speed, speed, 0.0),
                 }
                 vels = direction_map.get(direction.lower().replace(" ", "_"))
                 if vels is None:
@@ -496,7 +501,7 @@ class MCPAgentService:
                     })
                 speed = max(0.0, min(1.0, float(args.get("speed", 1.0))))
                 duration = max(0.1, min(10.0, float(args.get("duration", 1.0))))
-                omega = speed if direction.lower() == "left" else -speed
+                omega = -speed if direction.lower() == "left" else speed
                 completed, reason = self._execute_motion_sequence([(0.0, 0.0, omega, duration)])
                 return json.dumps({
                     "status": "ok" if completed else "blocked",
@@ -512,6 +517,13 @@ class MCPAgentService:
 
             elif name == "read_sensors":
                 snapshot = self.runtime.sensor_sampler.get_snapshot()
+                center_enabled = getattr(self.runtime.arbiter, "front_sensor_enabled", True)
+                front_clearance = snapshot.navigation_front_min(center_enabled)
+                caution_cm = (
+                    self.runtime.arbiter.caution_cm
+                    if center_enabled
+                    else getattr(self.runtime.arbiter, "degraded_caution_cm", 75.0)
+                )
                 return json.dumps(
                     {
                         "status": "ok",
@@ -522,20 +534,36 @@ class MCPAgentService:
                             "rl": round(snapshot.rl, 1),
                             "rr": round(snapshot.rr, 1),
                         },
-                        "front_min_cm": round(snapshot.front_min, 1),
+                        "front_min_cm": round(front_clearance, 1),
                         "rear_min_cm": round(snapshot.rear_min, 1),
-                        "front_clear": snapshot.front_min > 35.0,
+                        "front_clear": front_clearance >= caution_cm,
                     }
                 )
 
             elif name == "capture_image":
                 snapshot = self.runtime.vision.get_snapshot()
+                if not snapshot.healthy or snapshot.age > 1.0:
+                    return json.dumps({
+                        "status": "error",
+                        "message": "No fresh camera frame is available.",
+                        "camera_error": snapshot.error,
+                    })
+                jpeg = self.runtime.vision.get_jpeg()
+                vision_provider = getattr(self.runtime, "groq_vision", None)
+                description = vision_provider.describe(jpeg) if vision_provider else ""
+                if not description:
+                    return json.dumps({
+                        "status": "error",
+                        "message": "The current camera frame could not be analyzed.",
+                    })
                 identity = snapshot.identity
                 return json.dumps(
                     {
                         "status": "ok",
                         "camera_healthy": snapshot.healthy,
                         "backend": snapshot.backend,
+                        "description": description,
+                        "face_count": len(snapshot.faces),
                         "detected_person": {
                             "name": identity.name or "Unknown",
                             "status": identity.status,
@@ -609,3 +637,74 @@ class MCPAgentService:
 
         except Exception as exc:
             return json.dumps({"status": "error", "message": f"Tool execution error: {exc}"})
+
+    def route_intent(self, text: str) -> str:
+        """Lightweight semantic router to decide if command is an ACTION or CHAT."""
+        normalized = " ".join(text.lower().split())
+        action_terms = (
+            "move", "drive", "go forward", "go backward", "reverse", "turn left",
+            "turn right", "spin", "stop", "halt", "explore", "look around",
+            "take a photo", "capture", "sensor", "dance", "showcase", "remember",
+            "describe the environment", "describe my surroundings", "what do you see",
+            "what can you see", "what is in front of you",
+        )
+        if any(term in normalized for term in action_terms):
+            return "ACTION"
+        if not self._client:
+            return "CHAT"
+        try:
+            completion = self._client.chat.completions.create(
+                model=self.router_model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a router. Classify the user intent. If they want the robot to move, stop, look around, explore, remember facts, or perform any physical task, output exactly: ACTION. If it is just a greeting, a question, or casual chat, output exactly: CHAT. Output NOTHING else."
+                    },
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.1,
+                max_completion_tokens=96,
+                reasoning_effort="low",
+            )
+            result = (completion.choices[0].message.content or "CHAT").strip().upper()
+            return "ACTION" if result == "ACTION" else "CHAT"
+        except Exception as exc:
+            self.error = f"Groq router failed: {str(exc)[:180]}"
+            return "CHAT"
+
+    def chat(self, text: str, user_name: str | None, memories: list[str]) -> str:
+        """Fast cloud-based conversational fallback when tool execution is not needed."""
+        if not self._client:
+            return "My cloud brain is disconnected."
+
+        system = (
+            "You are AURUS, which stands for AUtonomous Robotic Ubiquitous System. "
+            "You are an advanced interactive robot built by the TechTitans team. "
+            "Your hardware components include a Raspberry Pi 4 brain, "
+            "4 mecanum wheels with L298N drivers, HC-SR04 ultrasonic sensors for obstacle avoidance, "
+            "and a high-resolution camera. "
+            "Your software features include Agentic routing via Groq, autonomous visual exploration using Llama Vision, "
+            "flawless speech recognition via Whisper, highly realistic Edge TTS, face recognition, and persistent memory. "
+            "You can explore autonomously, avoid obstacles, recognize people, and showcase your mobility. "
+            "Keep responses concise, warm, and natural for text-to-speech (max 2 sentences)."
+        )
+        if user_name:
+            system += f" The user's name is {user_name}."
+        if memories:
+            system += f" Here are some facts you know about them: {'; '.join(memories)}"
+
+        try:
+            completion = self._client.chat.completions.create(
+                model=self.chat_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.6,
+                max_completion_tokens=180,
+                reasoning_effort="low",
+            )
+            return (completion.choices[0].message.content or "").strip()
+        except Exception as exc:
+            self.error = f"Groq chat failed: {str(exc)[:180]}"
+            return "My cloud request failed. Please check the Groq connection and try again."

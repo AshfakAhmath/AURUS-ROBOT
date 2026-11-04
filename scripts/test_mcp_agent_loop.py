@@ -24,6 +24,9 @@ class MockSnapshot:
         self.backend = "mock-vision"
         self.identity = type("Identity", (), {"name": "Test Person", "status": "known", "confidence": 0.95})()
 
+    def navigation_front_min(self, center_enabled=True):
+        return min(self.fl, self.f, self.fr) if center_enabled else min(self.fl, self.fr)
+
 
 class MockRuntime:
     def __init__(self):
@@ -31,9 +34,9 @@ class MockRuntime:
         self.sensor_sampler = type("Sampler", (), {"get_snapshot": lambda self, *a: MockSnapshot()})()
         self.vision = type("Vision", (), {"get_snapshot": lambda self, *a: MockSnapshot()})()
         self.driver = type("Driver", (), {"get_simulation_state": lambda self, *a: {"x": 10.0, "y": 5.0, "theta": 0.0}, "is_simulation": True, "wiggle": lambda self, *a, **kw: None, "shiver": lambda self, *a, **kw: None, "spin": lambda self, *a, **kw: None})()
-        self.arbiter = type("Arbiter", (), {"mode": type("Mode", (), {"value": "idle"})(), "command": lambda self, *args, **kwargs: True, "halt": lambda self, *args, **kwargs: None})()
-        self.tts = type("TTS", (), {"speak": lambda self, txt: self.events.append(f"TTS: {txt}")})()
-        self.repository = type("Repo", (), {"memories_for": lambda self, uid: ["User likes robotics"], "remember": lambda self, uid, f: None})()
+        self.arbiter = type("Arbiter", (), {"mode": type("Mode", (), {"value": "idle"})(), "estopped": False, "front_sensor_enabled": True, "caution_cm": 35.0, "command": lambda self, *args, **kwargs: True, "halt": lambda self, *args, **kwargs: None, "set_mode": lambda self, mode: True})()
+        self.tts = type("TTS", (), {"speak": lambda self, txt: True})()
+        self.repository = type("Repo", (), {"get_user": lambda self, uid: {"id": uid}, "memories_for": lambda self, uid: ["User likes robotics"], "remember": lambda self, uid, f: None})()
         self.health = lambda *a: {"runtime": True, "motors": True, "mcp_agent": True}
 
     def emit(self, event, payload):
@@ -48,7 +51,7 @@ def main():
     print(f"Loaded {len(AURUS_MCP_TOOLS)} MCP Tool JSON Schemas.")
 
     runtime = MockRuntime()
-    agent = MCPAgentService(runtime, api_key="dummy_key", model="llama-3.3-70b-versatile")
+    agent = MCPAgentService(runtime, api_key="", model="openai/gpt-oss-120b")
     print(f"Agent service initialized. Ready state: {agent.ready}")
 
     # Test local dispatch of sensor reading tool

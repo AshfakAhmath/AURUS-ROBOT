@@ -18,6 +18,9 @@ MODELS = ROOT / "models"
 FILES = {
     "face_detection_yunet_2023mar.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
     "face_recognition_sface_2021dec.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+    # Pi OS OpenCV may expose CascadeClassifier without installing its XML
+    # data package. Keep an application-local detector for YuNet fallback.
+    "haarcascade_frontalface_default.xml": "https://raw.githubusercontent.com/opencv/opencv/4.x/data/haarcascades/haarcascade_frontalface_default.xml",
 }
 VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 KWS_NAME = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
@@ -59,16 +62,29 @@ def safe_extract_tar(archive: tarfile.TarFile, destination: Path) -> None:
 
 def create_wake_keyword(model_dir: Path) -> None:
     output = model_dir / "aurus_keywords.txt"
-    if output.is_file() and output.stat().st_size > 10:
+    raw = model_dir / "aurus_keywords_raw.txt"
+    definitions = (
+        "HEY AURUS :2.0 #0.18 @HEY_AURUS\n"
+        "AURUS :2.0 #0.18 @AURUS\n"
+        "HEY AURIS :2.0 #0.18 @HEY_AURIS\n"
+        "HEY ORIS :2.0 #0.18 @HEY_ORIS\n"
+    )
+    output_text = output.read_text(encoding="utf-8") if output.is_file() else ""
+    expected_labels = ("@HEY_AURUS", "@AURUS", "@HEY_AURIS", "@HEY_ORIS")
+    if (
+        output.is_file()
+        and output.stat().st_size > 10
+        and all(label in output_text for label in expected_labels)
+        and raw.is_file()
+        and raw.read_text(encoding="utf-8") == definitions
+    ):
         print(f"Present: {output.name}")
         return
     command = shutil.which("sherpa-onnx-cli")
     if not command:
         raise RuntimeError("sherpa-onnx-cli is missing; install requirements before model setup")
     missing_tokenizers = [
-        package
-        for package in ("sentencepiece", "pypinyin")
-        if importlib.util.find_spec(package) is None
+        package for package in ("sentencepiece",) if importlib.util.find_spec(package) is None
     ]
     if missing_tokenizers:
         packages = " ".join(f"'{package}'" for package in missing_tokenizers)
@@ -76,8 +92,7 @@ def create_wake_keyword(model_dir: Path) -> None:
             "sherpa-onnx requires its tokenizer helpers to create the AURUS wake-word tokens; "
             f"run: {sys.executable} -m pip install {packages}"
         )
-    raw = model_dir / "aurus_keywords_raw.txt"
-    raw.write_text("AURUS :1.5 #0.25 @AURUS\n", encoding="utf-8")
+    raw.write_text(definitions, encoding="utf-8")
     subprocess.run(
         [
             command,
