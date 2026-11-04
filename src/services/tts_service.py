@@ -1,7 +1,15 @@
-"""Serialized local TTS with Piper, eSpeak, and visual-only fallback."""
+"""Serialized local TTS with Piper, eSpeak, and visual-only fallback.
+
+Audio output can be routed to the Pi's local speaker or streamed over
+SocketIO to the connected PC's browser.  Set ``AURUS_AUDIO_OUTPUT`` to
+``pi`` (local only), ``browser`` (always stream), or ``auto`` (try
+local first, fall back to browser on failure).
+"""
 
 from __future__ import annotations
 
+import base64
+import logging
 import os
 from pathlib import Path
 import importlib.util
@@ -11,12 +19,19 @@ import subprocess
 import tempfile
 import threading
 import wave
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
+logger = logging.getLogger("aurus.tts")
+
+# Type alias for the callback that sends audio to the browser dashboard.
+AudioEmitCallback = Callable[[str, dict[str, Any]], None]
+
 
 class TTSService:
+    AUDIO_MODES = ("pi", "browser", "auto")
+
     def __init__(
         self,
         piper_model: str | Path | None = None,
@@ -25,6 +40,8 @@ class TTSService:
         volume_percent: int | None = None,
         gain_db: float | None = None,
         playback_device: str | None = None,
+        audio_output: str | None = None,
+        audio_emit: AudioEmitCallback | None = None,
     ):
         self.piper_model = Path(piper_model) if piper_model else None
         self.playback_active = playback_active or threading.Event()
@@ -44,12 +61,67 @@ class TTSService:
         except (TypeError, ValueError):
             self.gain_db = 6.0
         self.playback_device = playback_device or os.getenv("ALSA_PLAYBACK_DEVICE", "").strip()
+
+        # --- Audio output routing ---
+        raw_mode = (audio_output or os.getenv("AURUS_AUDIO_OUTPUT", "auto")).strip().lower()
+        self.audio_output: str = raw_mode if raw_mode in self.AUDIO_MODES else "auto"
+        self._audio_emit: AudioEmitCallback | None = audio_emit
+        # Tracks which output was actually used for the most recent utterance.
+        self.active_output: str = "pi"
+
         self._queue: queue.Queue[tuple[str, Callable[[], None] | None] | None] = queue.Queue(maxsize=8)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._piper_voice = None
         self.backend = self._select_backend()
         self.error = "" if self.backend != "visual" else "No local TTS executable available"
+
+    # ------------------------------------------------------------------
+    # Audio output routing
+    # ------------------------------------------------------------------
+
+    def set_audio_emit(self, callback: AudioEmitCallback | None) -> None:
+        """Install or replace the SocketIO emit callback (called from app.py)."""
+        self._audio_emit = callback
+
+    def set_audio_output(self, mode: str) -> bool:
+        """Switch audio output mode at runtime.  Returns True if accepted."""
+        mode = mode.strip().lower()
+        if mode not in self.AUDIO_MODES:
+            return False
+        self.audio_output = mode
+        logger.info("Audio output switched to '%s'.", mode)
+        return True
+
+    def _emit_to_browser(self, audio_path: str) -> bool:
+        """Send an audio file to the browser dashboard via SocketIO.
+
+        Returns True if the audio was emitted successfully.
+        """
+        if self._audio_emit is None:
+            return False
+        try:
+            with open(audio_path, "rb") as fh:
+                audio_bytes = fh.read()
+            if not audio_bytes:
+                return False
+            ext = Path(audio_path).suffix.lstrip(".").lower()
+            mime_format = "wav" if ext == "wav" else "mpeg"
+            payload = {
+                "data": base64.b64encode(audio_bytes).decode("ascii"),
+                "format": mime_format,
+            }
+            self._audio_emit("play_audio", payload)
+            self.active_output = "browser"
+            logger.info("Audio streamed to browser (%s, %d bytes).", ext, len(audio_bytes))
+            return True
+        except Exception as exc:
+            logger.warning("Failed to stream audio to browser: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Backend selection
+    # ------------------------------------------------------------------
 
     def _select_backend(self) -> str:
         # Prefer deterministic local synthesis. Edge TTS is retained only as a
@@ -104,6 +176,10 @@ class TTSService:
             self.error = "TTS queue full"
             return False
 
+    # ------------------------------------------------------------------
+    # Local playback helpers
+    # ------------------------------------------------------------------
+
     def _play_wav(self, path: str) -> None:
         if shutil.which("aplay"):
             command = ["aplay", "-q"]
@@ -129,7 +205,7 @@ class TTSService:
             with wave.open(handle.name, "wb") as wav_file:
                 self._piper_voice.synthesize_wav(text, wav_file)
             self._amplify_wav(handle.name)
-            self._play_wav(handle.name)
+            self._play_or_stream(handle.name)
         finally:
             try:
                 os.unlink(handle.name)
@@ -180,26 +256,22 @@ class TTSService:
                     ["mpg123", "-q", "-w", wav_path, handle.name], check=True, timeout=30
                 )
                 self._amplify_wav(wav_path)
-                self._play_wav(wav_path)
-            elif player == "mpg123":
-                subprocess.run(["mpg123", "-q", handle.name], check=True, timeout=30)
-            elif player == "ffplay":
-                subprocess.run(
-                    [
-                        "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
-                        "-af", f"volume={self.gain_db}dB", handle.name,
-                    ],
-                    check=True,
-                    timeout=30,
-                )
-            elif player == "mplayer":
-                subprocess.run(
-                    ["mplayer", "-really-quiet", "-af", f"volume={self.gain_db}", handle.name],
-                    check=True,
-                    timeout=30,
-                )
+                self._play_or_stream(wav_path)
+            elif self.audio_output == "browser":
+                # Browser mode: stream the MP3 directly without local playback.
+                self._emit_to_browser(handle.name)
+            elif self.audio_output == "auto":
+                # Auto mode: try local first, fall back to browser on failure.
+                try:
+                    self._play_mp3_locally(player, handle.name)
+                    self.active_output = "pi"
+                except Exception:
+                    if not self._emit_to_browser(handle.name):
+                        raise
             else:
-                raise RuntimeError("edge-tts generated audio but no MP3 player is installed")
+                # Pi-only mode.
+                self._play_mp3_locally(player, handle.name)
+                self.active_output = "pi"
         finally:
             try:
                 os.unlink(handle.name)
@@ -211,14 +283,96 @@ class TTSService:
                 except OSError:
                     pass
 
+    def _play_mp3_locally(self, player: str | None, path: str) -> None:
+        """Play an MP3 file through the Pi's local speaker."""
+        if player == "mpg123":
+            subprocess.run(["mpg123", "-q", path], check=True, timeout=30)
+        elif player == "ffplay":
+            subprocess.run(
+                [
+                    "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+                    "-af", f"volume={self.gain_db}dB", path,
+                ],
+                check=True,
+                timeout=30,
+            )
+        elif player == "mplayer":
+            subprocess.run(
+                ["mplayer", "-really-quiet", "-af", f"volume={self.gain_db}", path],
+                check=True,
+                timeout=30,
+            )
+        else:
+            raise RuntimeError("edge-tts generated audio but no MP3 player is installed")
+
+    # ------------------------------------------------------------------
+    # Unified play-or-stream dispatcher
+    # ------------------------------------------------------------------
+
+    def _play_or_stream(self, audio_path: str) -> None:
+        """Route a WAV/MP3 file based on the current ``audio_output`` mode.
+
+        * ``pi``      – play locally only.
+        * ``browser`` – stream to browser only.
+        * ``auto``    – try local first; on failure stream to browser.
+        """
+        if self.audio_output == "browser":
+            if not self._emit_to_browser(audio_path):
+                logger.warning("Browser emit failed; attempting local playback.")
+                self._play_wav(audio_path)
+                self.active_output = "pi"
+            return
+
+        if self.audio_output == "pi":
+            self._play_wav(audio_path)
+            self.active_output = "pi"
+            return
+
+        # auto mode
+        try:
+            self._play_wav(audio_path)
+            self.active_output = "pi"
+        except Exception as exc:
+            logger.warning("Local playback failed (%s); streaming to browser.", exc)
+            if not self._emit_to_browser(audio_path):
+                raise
+
+    # ------------------------------------------------------------------
+    # Synthesis dispatcher and worker loop
+    # ------------------------------------------------------------------
+
     def _speak(self, text: str) -> None:
         if self.backend == "edge-tts":
             self._speak_edge_tts(text)
         elif self.backend == "piper":
             self._speak_piper(text)
         elif self.backend in ("espeak-ng", "espeak"):
+            # espeak does not write a file – for browser mode we generate a WAV
+            # via --stdout and stream that instead.
+            if self.audio_output in ("browser", "auto"):
+                self._speak_espeak_to_file(text)
+            else:
+                amplitude = max(0, min(200, 100 + self.volume_percent))
+                subprocess.run([self.backend, "-a", str(amplitude), text], check=True, timeout=30)
+                self.active_output = "pi"
+
+    def _speak_espeak_to_file(self, text: str) -> None:
+        """Run espeak/espeak-ng writing to a temp WAV so it can be streamed."""
+        handle = tempfile.NamedTemporaryFile(prefix="aurus-espeak-", suffix=".wav", delete=False)
+        handle.close()
+        try:
             amplitude = max(0, min(200, 100 + self.volume_percent))
-            subprocess.run([self.backend, "-a", str(amplitude), text], check=True, timeout=30)
+            subprocess.run(
+                [self.backend, "-a", str(amplitude), "-w", handle.name, text],
+                check=True,
+                timeout=30,
+            )
+            self._play_or_stream(handle.name)
+        finally:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
 
     def _run(self) -> None:
         while not self._stop.is_set():

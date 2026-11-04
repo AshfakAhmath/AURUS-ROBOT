@@ -85,6 +85,8 @@ class RobotRuntime:
             playback_active=audio_playback,
             voice=os.getenv("AURUS_TTS_VOICE", "en-US-GuyNeural"),
             playback_device=os.getenv("ALSA_PLAYBACK_DEVICE", "").strip(),
+            audio_output=os.getenv("AURUS_AUDIO_OUTPUT", "auto"),
+            audio_emit=self.emit,
         )
         self.mcp_agent = MCPAgentService(self)
         self.groq_vision = GroqVisionService()
@@ -100,6 +102,7 @@ class RobotRuntime:
 
     def set_event_sink(self, callback: Callable[[str, dict], None]) -> None:
         self._event_sink = callback
+        self.tts.set_audio_emit(self.emit)
 
     def emit(self, event: str, payload: dict) -> None:
         try:
@@ -178,6 +181,12 @@ class RobotRuntime:
                 behavior.begin_exploration()
             elif previous == RobotMode.EXPLORING:
                 behavior.finish_exploration()
+        return accepted
+
+    def set_audio_output(self, mode: str) -> bool:
+        accepted = self.tts.set_audio_output(mode)
+        if accepted:
+            self.emit("system_health", self.health())
         return accepted
 
     def manual_drive(self, vx: float, vy: float, omega: float, sequence: int) -> bool:
@@ -536,6 +545,8 @@ class RobotRuntime:
             "tts_playback_device": self.tts.playback_device or "default",
             "tts_volume_percent": self.tts.volume_percent,
             "tts_gain_db": self.tts.gain_db,
+            "tts_audio_output": self.tts.audio_output,
+            "tts_active_output": self.tts.active_output,
             "audio_playback": self.tts.playback_active.is_set(),
             "database": True,
             "llm": self.mcp_agent.ready,

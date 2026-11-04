@@ -93,6 +93,14 @@ def create_app(runtime):
         if not runtime.set_mode(mode):
             emit("command_error", {"message": f"Mode '{mode}' rejected. Clear E-STOP first if latched."})
 
+    @socketio.on("set_audio_output")
+    def set_audio_output(data):
+        mode = str(payload(data).get("mode", "auto"))
+        if not runtime.set_audio_output(mode):
+            emit("command_error", {"message": f"Invalid audio output mode '{mode}'. Choose 'pi', 'browser', or 'auto'."})
+        else:
+            socketio.emit("system_health", runtime.health())
+
     @socketio.on("start_listening")
     def start_listening(_data=None):
         if runtime.start_listening():

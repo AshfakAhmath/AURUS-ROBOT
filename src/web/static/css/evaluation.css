@@ -427,6 +427,15 @@ kbd { padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; color
 .memory-row > input { min-width: 0; height: 36px; padding: 0 11px; border: 1px solid var(--line); border-radius: 9px; outline: 0; color: var(--text); background: rgba(255,255,255,.018); font-size: 10px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
 
+.audio-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 9px; padding-top: 9px; border-top: 1px solid rgba(255,255,255,.04); }
+.audio-label { display: flex; align-items: center; gap: 7px; color: var(--quiet); font-size: 9px; font-weight: 600; }
+.audio-speaker-icon { font-size: 11px; }
+.audio-active-tag { padding: 2px 7px; border-radius: 6px; background: rgba(113,227,211,.1); color: var(--accent); font: 600 8px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .05em; }
+.audio-toggle-group { display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 9px; padding: 2px; background: rgba(255,255,255,.02); }
+.audio-toggle-btn { height: 26px; padding: 0 9px; border: none; border-radius: 7px; color: var(--muted); background: transparent; font-size: 9px; font-weight: 600; cursor: pointer; transition: all .18s ease; }
+.audio-toggle-btn:hover { color: var(--text); background: rgba(255,255,255,.05); }
+.audio-toggle-btn.active { color: #071210; background: var(--accent); box-shadow: 0 2px 8px rgba(113,227,211,.2); }
+
 @media (max-width: 1180px) {
   .sidebar { width: 210px; }
   .workspace { width: calc(100% - 210px); margin-left: 210px; }

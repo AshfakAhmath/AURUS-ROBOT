@@ -490,6 +490,50 @@ class AudioPipelineTests(unittest.TestCase):
                 boosted = np.frombuffer(source.readframes(source.getnframes()), dtype=np.int16)
             self.assertEqual(int(boosted.max()), 2000)
 
+    def test_tts_audio_output_mode_switching(self):
+        service = TTSService()
+        self.assertEqual(service.audio_output, "auto")
+        self.assertTrue(service.set_audio_output("browser"))
+        self.assertEqual(service.audio_output, "browser")
+        self.assertTrue(service.set_audio_output("pi"))
+        self.assertEqual(service.audio_output, "pi")
+        self.assertTrue(service.set_audio_output("auto"))
+        self.assertEqual(service.audio_output, "auto")
+        self.assertFalse(service.set_audio_output("invalid-mode"))
+        self.assertEqual(service.audio_output, "auto")
+
+    def test_tts_browser_mode_emits_audio(self):
+        emitted = []
+        def mock_emit(event, payload):
+            emitted.append((event, payload))
+
+        service = TTSService(audio_output="browser", audio_emit=mock_emit)
+        with tempfile.TemporaryDirectory() as directory:
+            dummy_wav = Path(directory) / "test.wav"
+            dummy_wav.write_bytes(b"RIFFdummydata")
+            service._play_or_stream(str(dummy_wav))
+
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0][0], "play_audio")
+        self.assertEqual(emitted[0][1]["format"], "wav")
+        self.assertEqual(service.active_output, "browser")
+
+    def test_tts_auto_mode_falls_back_to_browser_on_local_error(self):
+        emitted = []
+        def mock_emit(event, payload):
+            emitted.append((event, payload))
+
+        service = TTSService(audio_output="auto", audio_emit=mock_emit)
+        with tempfile.TemporaryDirectory() as directory:
+            dummy_wav = Path(directory) / "fallback.wav"
+            dummy_wav.write_bytes(b"RIFFfallbackdata")
+            with patch.object(service, "_play_wav", side_effect=RuntimeError("USB speaker disconnected")):
+                service._play_or_stream(str(dummy_wav))
+
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0][0], "play_audio")
+        self.assertEqual(service.active_output, "browser")
+
 
 class StartupResourceTests(unittest.TestCase):
     def test_same_user_project_python_owner_is_reclaimable(self):

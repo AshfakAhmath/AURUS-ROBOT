@@ -261,6 +261,19 @@
             <input id="fact" maxlength="500" autocomplete="off" placeholder="A fact to remember about the recognized person">
             <button id="remember" class="button ghost-button">Remember</button>
           </div>
+
+          <div class="audio-row">
+            <div class="audio-label">
+              <span class="audio-speaker-icon" aria-hidden="true">🔊</span>
+              <span>Audio speaker</span>
+              <small id="audio-active-tag" class="audio-active-tag">Auto · Pi</small>
+            </div>
+            <div class="audio-toggle-group" role="group" aria-label="Audio speaker destination">
+              <button type="button" class="audio-toggle-btn active" data-audio-mode="auto" title="Auto: Try Pi USB speaker first, fallback to PC browser speaker if unavailable">⚡ Auto</button>
+              <button type="button" class="audio-toggle-btn" data-audio-mode="pi" title="Pi: Output to Raspberry Pi USB speaker only">🤖 Pi</button>
+              <button type="button" class="audio-toggle-btn" data-audio-mode="browser" title="PC: Stream to laptop/PC speakers via browser">💻 PC</button>
+            </div>
+          </div>
         </section>
       </main>
     </div>

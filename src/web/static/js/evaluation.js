@@ -23,6 +23,7 @@ socket.on('enrollment_progress', renderEnrollment);
 socket.on('conversation', renderConversation);
 socket.on('telemetry', renderTelemetry);
 socket.on('mission_update', renderMission);
+socket.on('play_audio', handleBrowserAudio);
 
 let missionDiscoverySignature = '';
 
@@ -49,6 +50,55 @@ function renderTelemetry(data) {
   drawRadar(data.sensors);
 }
 
+let audioContextUnlocked = false;
+function unlockAudioContext() {
+  if (audioContextUnlocked) return;
+  audioContextUnlocked = true;
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (AudioContext) {
+      const ctx = new AudioContext();
+      ctx.resume().catch(() => {});
+    }
+  } catch (e) {}
+}
+window.addEventListener('click', unlockAudioContext, { once: true });
+window.addEventListener('keydown', unlockAudioContext, { once: true });
+
+function handleBrowserAudio({data, format}) {
+  if (!data) return;
+  try {
+    const mime = format === 'wav' ? 'audio/wav' : 'audio/mpeg';
+    const audio = new Audio(`data:${mime};base64,${data}`);
+    robotSpeaking = true;
+    audio.onended = () => { robotSpeaking = false; };
+    audio.onerror = () => { robotSpeaking = false; };
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.catch(err => {
+        robotSpeaking = false;
+        console.warn('[Browser Audio] Playback prevented:', err);
+        $('error').textContent = 'Click on the page to allow PC speaker audio playback';
+      });
+    }
+  } catch (err) {
+    robotSpeaking = false;
+    console.error('[Browser Audio Error]', err);
+  }
+}
+
+function updateAudioOutputUI(configuredMode, activeOutput) {
+  const mode = configuredMode || 'auto';
+  document.querySelectorAll('[data-audio-mode]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.audioMode === mode);
+  });
+  const tag = $('audio-active-tag');
+  if (tag) {
+    const activeLabel = activeOutput === 'browser' ? 'PC' : 'Pi';
+    tag.textContent = `${mode.toUpperCase()} · ${activeLabel}`;
+  }
+}
+
 function renderHealth(health) {
   const keys = ['runtime','motors','sensors','camera','microphone','tts','llm','groq_vision','database','mcp_agent','wake_phrase','estop'];
   $('health').innerHTML = keys.map(key => {
@@ -66,6 +116,9 @@ function renderHealth(health) {
     if (browserVoice) label = 'browser';
     return `<div class="health-item ${good ? '' : 'bad'}"><span class="health-name"><i></i>${key.replaceAll('_',' ')}</span><strong>${label}</strong></div>`;
   }).join('');
+  if (health && health.tts_audio_output) {
+    updateAudioOutputUI(health.tts_audio_output, health.tts_active_output);
+  }
 }
 
 function renderEnrollment(status) {
@@ -355,6 +408,12 @@ $('showcase').onclick = () => socket.emit('perform_showcase', {});
 $('enroll').onclick = () => socket.emit('enroll_person', {name: $('enroll-name').value.trim()});
 $('remember').onclick = () => socket.emit('remember_fact', {text: $('fact').value.trim()});
 document.querySelectorAll('[data-mode]').forEach(btn => btn.onclick = () => socket.emit('set_mode', {mode: btn.dataset.mode}));
+document.querySelectorAll('[data-audio-mode]').forEach(btn => {
+  btn.onclick = () => {
+    const mode = btn.dataset.audioMode;
+    socket.emit('set_audio_output', {mode});
+  };
+});
 
 let currentSpeed = 1.0;
 const speedSlider = $('speed-slider');
