@@ -91,6 +91,10 @@ SENSOR_RL_ECHO_PIN = 22   # Rear-Left Echo
 SENSOR_RR_TRIG_PIN = 10   # Rear-Right Trig
 SENSOR_RR_ECHO_PIN = 11   # Rear-Right Echo
 
+# Operator-selected coverage policy: use remaining valid sensors by default.
+# True restores strict directional coverage restrictions.
+REQUIRE_FULL_SENSOR_COVERAGE = os.getenv("AURUS_REQUIRE_FULL_SENSOR_COVERAGE", "false").strip().lower() == "true"
+
 # Sensor angular offsets from chassis heading (radians, used by simulation raycasting)
 import math
 SENSOR_ANGLE_FL = math.pi / 4       # Front-Left: +45°

@@ -111,17 +111,21 @@ class ExhibitionDemo:
         arbiter = self.runtime.arbiter
         sensors = self.runtime.sensor_sampler.get_snapshot()
         direction = "rotation" if omega else "front" if vx > 0 else "rear"
-        if not sensors.coverage(center_default=arbiter.front_sensor_enabled)[direction]:
+        strict = getattr(arbiter, "require_full_coverage", True)
+        if not sensors.valid_distances():
+            return False, "no usable ultrasonic sensor readings"
+        if strict and not sensors.coverage(center_default=arbiter.front_sensor_enabled)[direction]:
             return False, f"{direction} sensor coverage insufficient"
+        distance = sensors.available_clearance(direction, center_default=arbiter.front_sensor_enabled)
         if omega:
-            distance = min(sensors.fl, sensors.f, sensors.fr, sensors.rl, sensors.rr)
             clearance = 60.0
         elif vx > 0:
-            distance = sensors.navigation_front_min(arbiter.front_sensor_enabled)
-            clearance = 60.0 if sensors.center_enabled(arbiter.front_sensor_enabled) else max(75.0, arbiter.degraded_caution_cm)
+            clearance = 60.0 if not strict or sensors.center_enabled(arbiter.front_sensor_enabled) else max(75.0, arbiter.degraded_caution_cm)
         else:
-            distance, clearance = sensors.rear_min, 60.0
+            clearance = 60.0
         clearance = max(clearance, arbiter.caution_cm, arbiter.hard_stop_cm)
+        if distance is None and not strict:
+            return True, "unavailable sensors ignored; direction unobserved"
         return distance >= clearance, "" if distance >= clearance else f"{direction} clearance below demo margin ({clearance:g} cm)"
 
     def _motion(self, vx, omega, duration):

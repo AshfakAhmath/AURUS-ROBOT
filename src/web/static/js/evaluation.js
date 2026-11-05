@@ -60,8 +60,11 @@ function renderSensorControl(sensors) {
     $(`sensor-error-${key}`).textContent = state.error || '';
   }
   const restricted = Object.entries(sensors.coverage || {}).filter(([, valid]) => !valid).map(([direction]) => direction);
+  const hasHealthySensor = Object.values(sensors.states || {}).some(state => state.status === 'Healthy');
   $('sensor-coverage').textContent = sensors.reduced_coverage
-    ? `Reduced coverage. Restricted: ${restricted.join(', ') || 'front-center degraded mode (45/75 cm margins)'}.`
+    ? (sensors.coverage_required === false
+      ? (hasHealthySensor ? 'Reduced coverage: unavailable sensors ignored; remaining healthy sensors are active.' : 'No usable sensor readings: movement stopped.')
+      : `Reduced coverage. Restricted: ${restricted.join(', ') || 'front-center degraded mode (45/75 cm margins)'}.`)
     : 'All five sensors healthy; full configured coverage.';
 }
 

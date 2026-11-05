@@ -40,6 +40,7 @@ class RobotRuntime:
             self.driver,
             self.sensor_sampler,
             front_sensor_enabled=front_sensor_enabled,
+            require_full_coverage=config.REQUIRE_FULL_SENSOR_COVERAGE,
         )
         self.vision = VisionService(self.identity, self.project_root / "models")
 
@@ -239,8 +240,13 @@ class RobotRuntime:
             self.sensor_sampler.set_enabled(key, enabled)
         # Configuration invalidation is synchronous. No AI/audio on this path.
         self.arbiter.tick()
-        data = self.sensor_sampler.get_snapshot().as_dict()
+        data = self.sensor_telemetry()
         self.emit("sensor_configuration", data)
+        return data
+
+    def sensor_telemetry(self):
+        data = self.sensor_sampler.get_snapshot().as_dict()
+        data["coverage_required"] = self.arbiter.require_full_coverage
         return data
 
     def emergency_stop(self) -> None:
@@ -535,8 +541,9 @@ class RobotRuntime:
             return {"status": "ok" if started else "error", "message": "FIT Expo demo started" if started else "Demo unavailable"}
         if "status" in lower or "how are your systems" in lower:
             sensors = self.sensor_sampler.get_snapshot()
-            clearance = sensors.navigation_front_min(self.arbiter.front_sensor_enabled)
-            response = f"Systems checked. Navigation clearance is {clearance:.0f} centimetres. Current mode is {self.arbiter.mode.value}."
+            clearance = sensors.available_clearance("front", center_default=self.arbiter.front_sensor_enabled)
+            distance = f"{clearance:.0f} centimetres" if clearance is not None else "unavailable"
+            response = f"Systems checked. Available front-sensor clearance is {distance}. Current mode is {self.arbiter.mode.value}."
             return self._announce(response, source, clean, "local")
         if any(word in lower for word in ("hello", "hi aurus", "hey aurus")):
             person = self._current_person()
@@ -632,7 +639,7 @@ class RobotRuntime:
         return {
             "timestamp": time.time(),
             "mode": self.arbiter.mode.value,
-            "sensors": self.sensor_sampler.get_snapshot().as_dict(),
+            "sensors": self.sensor_telemetry(),
             "motion": self.arbiter.get_decision().as_dict(),
             "vision": self.vision.get_snapshot().as_dict(),
             "enrollment": self.identity.get_enrollment().as_dict(),

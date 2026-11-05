@@ -54,18 +54,48 @@ def demo_harness():
 
 def test_recording_script_and_audio_are_cached_valid_and_unclipped():
     clips = DemoAudioCache(ASSETS).validate()
+    manifest = json.loads((ASSETS / "manifest.json").read_text())
+    assert manifest["engine"] == "Microsoft Edge online neural TTS"
+    assert manifest["voice"] == "en-US-GuyNeural"
+    assert manifest["mastering"]["target_lufs"] == -12
     assert "Please ask them" not in DEMO_CLIPS["closing"]
     assert "FIT Expo" in DEMO_CLIPS["closing"]
     assert "Faculty of Information Technology Expo" in DEMO_CLIPS["introduction"]
     assert "exhibition" not in " ".join(DEMO_CLIPS.values()).lower()
     assert "prototype" in DEMO_CLIPS["introduction"]
-    for clip in clips.values():
+    for key, clip in clips.items():
         with wave.open(str(clip["path"]), "rb") as source:
+            assert source.getframerate() == 48000
             pcm = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").astype(np.int32)
-        assert 28000 < np.abs(pcm).max() < 30000
+        assert 0 < np.abs(pcm).max() < 30000
         assert not np.any(np.abs(pcm) >= 32767)
+        level = manifest["clips"][key]
+        assert -13.5 <= level["integrated_lufs"] <= -10.5
+        assert level["true_peak_dbtp"] <= -0.8
+        measured_rms = 20 * np.log10(np.sqrt(np.mean((pcm / 32768) ** 2)))
+        assert measured_rms == pytest.approx(level["rms_dbfs"], abs=0.02)
+        assert measured_rms > -17
     with wave.open(str(ASSETS / "fit_expo_preview.wav"), "rb") as source:
         assert 55 < source.getnframes() / source.getframerate() < 70
+
+
+def test_cloud_mastering_measurement_parser_handles_ffmpeg_summary(monkeypatch):
+    from scripts import prepare_demo_audio as prepare
+    measurements = {"input_i": "-12.0", "input_tp": "-2.0", "input_lra": "2.0", "input_thresh": "-22", "target_offset": "0.0"}
+    monkeypatch.setattr(prepare.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stderr="FFmpeg log\n" + json.dumps(measurements) + "\nOutput summary\n"))
+    assert prepare.analyse("fake-ffmpeg", "file.wav")["input_i"] == "-12.0"
+    measurements["input_i"] = "-inf"
+    with pytest.raises(ValueError, match="silent or invalid"):
+        prepare.analyse("fake-ffmpeg", "file.wav")
+
+
+@pytest.mark.parametrize("sample", [0, 32767])
+def test_cloud_mastering_rejects_silent_or_clipped_pcm(tmp_path, sample):
+    from scripts import prepare_demo_audio as prepare
+    path = tmp_path / "bad.wav"
+    prepare.write_wav(path, 48000, np.full(100, sample, dtype="<i2").tobytes())
+    with pytest.raises(ValueError, match="empty, silent or clipped"):
+        prepare.pcm(path)
 
 
 def test_cache_rejects_missing_or_outdated_text(tmp_path):

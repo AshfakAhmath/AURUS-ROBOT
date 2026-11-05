@@ -22,6 +22,7 @@ class MotionArbiter:
         front_sensor_enabled: bool = True,
         degraded_hard_stop_cm: float = 45.0,
         degraded_caution_cm: float = 75.0,
+        require_full_coverage: bool = True,
     ):
         self.driver = driver
         self.sensor_sampler = sensor_sampler
@@ -30,6 +31,7 @@ class MotionArbiter:
         self.caution_cm = max(caution_cm, hard_stop_cm)
         self.stale_after = stale_after
         self.front_sensor_enabled = bool(front_sensor_enabled)
+        self.require_full_coverage = bool(require_full_coverage)
         self.degraded_hard_stop_cm = max(degraded_hard_stop_cm, hard_stop_cm)
         self.degraded_caution_cm = max(degraded_caution_cm, self.degraded_hard_stop_cm)
         self._lock = threading.RLock()
@@ -164,14 +166,17 @@ class MotionArbiter:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "command expired (deadman stop)")
         if not any((command.vx, command.vy, command.omega)):
             return MotionDecision(now, command, 0.0, 0.0, 0.0, True, "stopped")
-        if not sensors.states and sensors.is_stale(self.stale_after):
+        if self.require_full_coverage and not sensors.states and sensors.is_stale(self.stale_after):
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "sensor data stale or unhealthy")
         distances = (sensors.fl, sensors.f, sensors.fr, sensors.rl, sensors.rr)
-        if not sensors.states and not all(math.isfinite(value) and value >= 0.0 for value in distances):
+        if self.require_full_coverage and not sensors.states and not all(math.isfinite(value) and value >= 0.0 for value in distances):
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "sensor data invalid")
 
         vx, vy, omega = command.vx, command.vy, command.omega
         reason = "allowed"
+        valid = sensors.valid_distances(self.stale_after)
+        if not valid:
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "no usable ultrasonic sensor readings")
 
         coverage = sensors.coverage(self.stale_after, self.front_sensor_enabled)
         required = []
@@ -186,34 +191,39 @@ class MotionArbiter:
         if omega:
             required.append("rotation")
         for direction in required:
-            if not coverage[direction]:
+            if not coverage[direction] and self.require_full_coverage:
                 return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"{direction} sensor coverage insufficient (disabled, initializing, invalid or stale)")
+        if any(not coverage[direction] for direction in required):
+            reason = "allowed with reduced coverage; unavailable sensors ignored"
 
-        front_clearance = sensors.navigation_front_min(self.front_sensor_enabled)
+        front_clearance = sensors.available_clearance("front", self.stale_after, self.front_sensor_enabled)
+        rear_clearance = sensors.available_clearance("rear", self.stale_after)
+        left_clearance = sensors.available_clearance("left", self.stale_after)
+        right_clearance = sensors.available_clearance("right", self.stale_after)
         center_enabled = sensors.center_enabled(self.front_sensor_enabled)
-        front_hard_stop = self.hard_stop_cm if center_enabled else self.degraded_hard_stop_cm
-        front_caution = self.caution_cm if center_enabled else self.degraded_caution_cm
+        front_hard_stop = self.hard_stop_cm if center_enabled or not self.require_full_coverage else self.degraded_hard_stop_cm
+        front_caution = self.caution_cm if center_enabled or not self.require_full_coverage else self.degraded_caution_cm
 
-        if vx > 0 and front_clearance < front_hard_stop:
+        if vx > 0 and front_clearance is not None and front_clearance < front_hard_stop:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"front obstacle {front_clearance:.1f} cm", "front", front_clearance)
-        if vx < 0 and sensors.rear_min < self.hard_stop_cm:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"rear obstacle {sensors.rear_min:.1f} cm", "rear", sensors.rear_min)
-        if vy < 0 and min(sensors.fl, sensors.rl) < self.hard_stop_cm:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "left-side obstacle", "left", min(sensors.fl, sensors.rl))
-        if vy > 0 and min(sensors.fr, sensors.rr) < self.hard_stop_cm:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "right-side obstacle", "right", min(sensors.fr, sensors.rr))
+        if vx < 0 and rear_clearance is not None and rear_clearance < self.hard_stop_cm:
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"rear obstacle {rear_clearance:.1f} cm", "rear", rear_clearance)
+        if vy < 0 and left_clearance is not None and left_clearance < self.hard_stop_cm:
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "left-side obstacle", "left", left_clearance)
+        if vy > 0 and right_clearance is not None and right_clearance < self.hard_stop_cm:
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "right-side obstacle", "right", right_clearance)
         if omega:
-            key = min(zip(("fl", "f", "fr", "rl", "rr"), distances), key=lambda item: item[1])
+            key = min(valid.items(), key=lambda item: item[1])
             if key[1] < self.hard_stop_cm:
                 direction = {"fl": "left", "f": "front", "fr": "right", "rl": "rear", "rr": "rear"}[key[0]]
                 return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"{direction} obstacle {key[1]:.1f} cm during rotation", direction, key[1])
 
-        if vx > 0 and front_clearance < front_caution:
+        if vx > 0 and front_clearance is not None and front_clearance < front_caution:
             vx *= 0.35
             reason = f"forward speed limited at {front_clearance:.1f} cm"
-        elif vx < 0 and sensors.rear_min < self.caution_cm:
+        elif vx < 0 and rear_clearance is not None and rear_clearance < self.caution_cm:
             vx *= 0.35
-            reason = f"reverse speed limited at {sensors.rear_min:.1f} cm"
+            reason = f"reverse speed limited at {rear_clearance:.1f} cm"
 
         return MotionDecision(now, command, vx, vy, omega, True, reason)
 

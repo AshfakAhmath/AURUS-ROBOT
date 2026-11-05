@@ -73,6 +73,19 @@ class SensorSnapshot:
     def center_enabled(self, default=True) -> bool:
         return self.states["f"].enabled if self.states else default
 
+    def valid_distances(self, max_age=0.3) -> dict[str, float]:
+        """Only current, enabled measurements; missing values stay absent."""
+        return {key: getattr(self, key) for key in ("fl", "f", "fr", "rl", "rr")
+                if self.usable(key, max_age) and math.isfinite(getattr(self, key)) and getattr(self, key) >= 0}
+
+    def available_clearance(self, direction: str, max_age=0.3, center_default=True) -> float | None:
+        keys = {"front": ("fl", "f", "fr") if self.center_enabled(center_default) else ("fl", "fr"),
+                "rear": ("rl", "rr"), "left": ("fl", "rl"), "right": ("fr", "rr"),
+                "rotation": ("fl", "f", "fr", "rl", "rr")}[direction]
+        valid = self.valid_distances(max_age)
+        values = [valid[key] for key in keys if key in valid]
+        return min(values) if values else None
+
     def coverage(self, max_age=0.3, center_default=True) -> dict[str, bool]:
         front = ("fl", "f", "fr") if self.center_enabled(center_default) else ("fl", "fr")
         return {direction: all(self.usable(k, max_age) for k in keys) for direction, keys in {

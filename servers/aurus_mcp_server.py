@@ -56,6 +56,7 @@ if FastMCP is None:
 
 
 from src.hardware.motors import MecanumDriver
+from src import config
 from src.hardware.sensors import ProximitySensor
 from src.memory.repository import MemoryRepository
 from src.core.models import RobotMode
@@ -98,7 +99,7 @@ def _init_hardware() -> None:
         _sampler = SensorSampler(_sensor, front_sensor_enabled=os.getenv("AURUS_FRONT_SENSOR_ENABLED", "true").lower() == "true")
         _sampler.sample_once()
         _sampler.start()
-        _arbiter = MotionArbiter(_driver, _sampler)
+        _arbiter = MotionArbiter(_driver, _sampler, require_full_coverage=config.REQUIRE_FULL_SENSOR_COVERAGE)
         _arbiter.set_dashboard_connected(True)
         _arbiter.start()
 
@@ -343,16 +344,19 @@ def read_sensors() -> str:
     _init_hardware()
     snapshot = _sampler.get_snapshot()
     data = snapshot.as_dict()
-    clearance = snapshot.navigation_front_min()
-    caution = _arbiter.caution_cm if snapshot.center_enabled() else _arbiter.degraded_caution_cm
+    strict = _arbiter.require_full_coverage
+    data["coverage_required"] = strict
+    clearance = snapshot.available_clearance("front")
+    rear = snapshot.available_clearance("rear")
+    caution = _arbiter.caution_cm if snapshot.center_enabled() or not strict else _arbiter.degraded_caution_cm
     return json.dumps({
         "status": "ok", "simulation_mode": _sensor.is_simulation,
         "healthy": snapshot.healthy and not snapshot.is_stale(), "error": snapshot.error,
         "distances_cm": {k: data[k] for k in ("fl", "f", "fr", "rl", "rr")},
-        "front_min_cm": clearance if data["coverage"]["front"] else None,
-        "rear_min_cm": data["rear_min"],
-        "front_clear": data["coverage"]["front"] and clearance >= caution,
-        "rear_clear": data["coverage"]["rear"] and snapshot.rear_min >= _arbiter.caution_cm,
+        "front_min_cm": clearance if not strict or data["coverage"]["front"] else None,
+        "rear_min_cm": rear if not strict or data["coverage"]["rear"] else None,
+        "front_clear": clearance is not None and (not strict or data["coverage"]["front"]) and clearance >= caution,
+        "rear_clear": rear is not None and (not strict or data["coverage"]["rear"]) and rear >= _arbiter.caution_cm,
         "sensors": data,
     }, allow_nan=False)
 

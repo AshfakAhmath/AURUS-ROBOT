@@ -207,6 +207,7 @@ def test_gpio_missing_echo_raises_instead_of_fabricating_400(monkeypatch):
 def test_configuration_reassesses_active_movement_immediately():
     _, sampler, driver, arbiter, runtime, _ = build()
     runtime._default_front_sensor_enabled = True
+    runtime.sensor_telemetry = lambda: RobotRuntime.sensor_telemetry(runtime)
     arbiter.set_mode(RobotMode.MANUAL)
     arbiter.command("manual", 1, 0, 0)
     arbiter.tick()

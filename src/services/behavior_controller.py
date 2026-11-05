@@ -216,10 +216,11 @@ class BehaviorController:
             return
         sensors = self.sensor_sampler.get_snapshot()
         center_enabled = sensors.center_enabled(getattr(self.arbiter, "front_sensor_enabled", True))
-        clearance = sensors.navigation_front_min(center_enabled)
+        clearance = sensors.available_clearance("front", center_default=center_enabled)
+        strict = getattr(self.arbiter, "require_full_coverage", True)
         caution_cm = (
             self.arbiter.caution_cm
-            if center_enabled
+            if center_enabled or not strict
             else getattr(self.arbiter, "degraded_caution_cm", 75.0)
         )
         now = time.monotonic()
@@ -232,7 +233,7 @@ class BehaviorController:
 
         # Cancel the mission before any notice/TTS/cloud work; never reroute.
         coverage = sensors.coverage(center_default=center_enabled)
-        if not coverage["front"] or clearance < caution_cm:
+        if (strict and not coverage["front"]) or (clearance is not None and clearance < caution_cm):
             self.arbiter.halt("explore-obstacle-stop")
             self.arbiter.set_mode(RobotMode.IDLE)
             with self._mission_lock:
