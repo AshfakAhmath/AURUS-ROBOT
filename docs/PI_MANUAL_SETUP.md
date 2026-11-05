@@ -66,6 +66,7 @@ AURUS_TTS_GAIN_DB=12
 # Demo only: live Groq speech every time
 AURUS_DEMO_TTS_MODEL=canopylabs/orpheus-v1-english
 AURUS_DEMO_TTS_VOICE=troy
+AURUS_DEMO_AUDIO_ENHANCE=true
 AURUS_DEMO_TTS_GAIN_DB=6
 
 # Devices confirmed by the operator's latest ALSA output
@@ -83,6 +84,9 @@ Keep any other previously working normal-speech gain/model-path settings if they
 differ. The ordinary Edge voice setting does not change a Piper model's voice.
 Save with Ctrl+O, Enter, Ctrl+X. The new demo gain is independent and peak-limited;
 ordinary speech's previous settings and fallback behavior have been restored.
+With enhancement enabled, demo-only EQ reduces bass and lifts speech presence;
+compression with short look-ahead and bounded make-up gain raises average level
+while leaving 1 dB sample-peak headroom. Normal conversation gain is unchanged.
 
 ## 3. Confirm actual audio devices
 
@@ -109,6 +113,24 @@ cancels the demo before its next gesture and reports the reason. It does not
 reuse an earlier recording or silently change the demo voice. An in-flight
 cloud request can finish after Stop, but its audio is discarded and no later
 chunk, playback or movement is started for the cancelled demo.
+
+After transferring the updated source (including `scripts/check_demo_tts.py`
+and `src/services/speech_audio.py`), verify synthesis without robot startup:
+
+```bash
+.venv/bin/python scripts/check_demo_tts.py
+```
+
+To also play through the confirmed headphone output:
+
+```bash
+.venv/bin/python scripts/check_demo_tts.py --play --device plughw:2,0
+```
+
+Both commands request a fresh introduction and delete the temporary audio.
+Only `--play` invokes audio playback. They never initialize the robot runtime,
+GPIO or motors and do not print the API key. Successful synthesis confirms API
+access at that moment; an audible introduction confirms the speaker route.
 
 ## 5. Start manually and test
 

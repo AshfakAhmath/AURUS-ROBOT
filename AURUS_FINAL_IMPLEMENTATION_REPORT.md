@@ -2,10 +2,11 @@
 
 Date: 2026-11-04 (Asia/Colombo). Implementation and simulation tests only.
 
-**Current behavior update, 2026-11-05:** Section R supersedes O/Q speech and
+**Current behavior update, 2026-11-05:** Sections R/S supersede O/Q speech and
 cache behavior. Ordinary speech has its previous Piper/Edge/eSpeak selection;
 only the FIT Expo demo requests live Groq Orpheus/Troy narration for each line
-on every run. Saved demo recordings have been removed. Section P's remaining
+on every run, with demo-only EQ/compression added in S. Saved demo recordings
+have been removed. Section P's remaining
 valid-sensor policy is unchanged: partial coverage is a warning and strict
 coverage is opt-in. Earlier sections retain the history of prior revisions.
 
@@ -1035,3 +1036,66 @@ change, Pi service action, deployment, commit or push was performed. Groq remain
 required for the demo and existing AI features, so its original package/key
 configuration is retained. See `docs/PI_MANUAL_SETUP.md` for the deliberate Pi
 update and `.env` changes; boot startup remains a manual operator action.
+
+## S. Groq Demo Retained, Loudness Enhancement and Confirmation — 2026-11-05
+
+At clean commit `7de3ae32db09118cf0d42a82e692c90f206906ff`, the operator requested
+normal-style demo speech plus more audible presentation. During that work the
+operator cancelled the provider switch after reporting that Orpheus terms had
+been accepted. The pending provider-switch changes were removed. Section R's
+live Groq/Troy demo, original normal speech, fixed messages, fresh requests,
+temporary playback, cancellation and motion behavior remain in place.
+
+The independently requested demo loudness improvement is retained:
+
+```dotenv
+AURUS_DEMO_TTS_MODEL=canopylabs/orpheus-v1-english
+AURUS_DEMO_TTS_VOICE=troy
+AURUS_DEMO_AUDIO_ENHANCE=true
+AURUS_DEMO_TTS_GAIN_DB=6
+```
+
+`src/services/speech_audio.py` uses the existing NumPy dependency to remove DC,
+reduce low bass, add a broad 3 dB presence lift near 2.4 kHz, compress the RMS
+envelope at 3:1 with a soft knee, and apply bounded make-up gain. A short
+look-ahead prevents leading transients from forcing excessive whole-clip
+attenuation. Final sample peaks stay below -1 dBFS. Channel count, sample rate
+and duration are preserved; silence stays silent. This replaces only the demo's
+former gain-only processing when enhancement is enabled. False retains the
+previous bounded gain helper. Normal speech gain/provider behavior is unchanged.
+Physical room loudness and true inter-sample peaks have not been measured.
+
+`scripts/check_demo_tts.py` loads the private project `.env`, synthesizes the
+actual multi-chunk introduction, applies the same demo enhancement, reports
+model/voice/duration and removes the temporary audio. The default command does
+not play anything; `--play --device plughw:2,0` additionally invokes ALSA for the
+operator's confirmed headphone output. No robot runtime/GPIO/motors are started
+and no key is printed. This gives the operator one concrete live confirmation
+after transferring the new files. Accepted terms were reported by the operator;
+successful live synthesis/audible playback remain pending that Pi command.
+
+Files changed: `.env.example`, `src/services/tts_service.py`, new
+`src/services/speech_audio.py`, new `scripts/check_demo_tts.py`,
+`tests/test_groq_tts.py`, `docs/PI_MANUAL_SETUP.md`, `assets/fit_expo/README.md`
+and this report. Provider-switch changes to runtime, demo controller and web
+adapter were restored to the pre-turn commit; no cancelled backend switch is
+left in the implementation.
+
+Actual verification:
+
+- The first synthetic loudness regression found that compressor attack
+  transients reduced average level after peak limiting. Added 20 ms look-ahead;
+  the same average-level assertion then passed without weakening its threshold.
+- Targeted Groq/demo tests: **48 passed**, 2.15 s, before adding two CLI cases.
+- Final `python -m pytest -q -rs`: **225 passed, 0 failed, 2 skipped**, 7.39 s.
+  Skips remain the existing OpenCV-unavailable cases. The existing pytest-asyncio
+  fixture-loop-scope deprecation warning remains.
+- Added synthetic checks for average level over the prior bounded-gain method,
+  presence relative to bass, preserved mono/stereo format/duration/balance,
+  silence, peak headroom and CLI success/failure/temporary cleanup. Cloud,
+  playback and hardware calls were mocked. Source parsing/compilation, CLI help
+  and final diff checks passed.
+
+No live API request, physical playback, GPIO/motor operation, private `.env`
+change, deployment, service action, commit or push was performed. No runtime
+dependency was added. The provided Pi test is the remaining live confirmation.

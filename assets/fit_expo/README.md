@@ -7,6 +7,7 @@ time a line is spoken, on every run. It uses Orpheus English and the Troy voice:
 ```dotenv
 AURUS_DEMO_TTS_MODEL=canopylabs/orpheus-v1-english
 AURUS_DEMO_TTS_VOICE=troy
+AURUS_DEMO_AUDIO_ENHANCE=true
 AURUS_DEMO_TTS_GAIN_DB=6
 ```
 
@@ -15,7 +16,10 @@ quota are required. Lines longer than 200 characters are split and their WAV
 responses joined. A temporary WAV is played through the existing Pi/PC/auto
 route and deleted after playback or failure. Nothing is retained for replay.
 There is no preparation/build step, persistent source cache or local-voice
-fallback for the demo. Demo-only gain is peak-limited; speaker/amplifier volume
+fallback for the demo. Demo-only EQ reduces bass and lifts speech presence;
+compression with short look-ahead and make-up gain lifts the average level.
+Peaks retain 1 dB headroom. Disabling enhancement restores the prior bounded
+gain processor. No extra audio-processing package is required. Speaker/amplifier volume
 and the correct output device still determine actual audibility.
 
 The prototype introduction, Faculty of Information Technology Expo wording,

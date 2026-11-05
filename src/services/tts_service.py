@@ -27,6 +27,7 @@ from typing import Any, Callable
 import numpy as np
 
 from src.services.groq_tts_service import GroqSpeechSynthesizer
+from src.services.speech_audio import enhance_demo_wav
 
 logger = logging.getLogger("aurus.tts")
 
@@ -214,11 +215,14 @@ class TTSService:
 
     @staticmethod
     def _boost_demo_audio(path):
-        """Apply bounded demo-only gain; ordinary speech keeps its old gain."""
+        """Enhance Groq demo speech; ordinary speech keeps its old gain."""
         try:
             gain_db = max(0.0, min(24.0, float(os.getenv("AURUS_DEMO_TTS_GAIN_DB", "6"))))
         except ValueError:
             gain_db = 6.0
+        if os.getenv("AURUS_DEMO_AUDIO_ENHANCE", "true").strip().lower() == "true":
+            enhance_demo_wav(path, gain_db)
+            return
         with wave.open(str(path), "rb") as source:
             params = source.getparams()
             samples = np.frombuffer(source.readframes(params.nframes), dtype="<i2").astype(np.float32)

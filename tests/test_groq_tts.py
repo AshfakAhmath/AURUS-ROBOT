@@ -194,11 +194,110 @@ def test_model_terms_error_is_actionable_and_redacted(tmp_path):
 def test_demo_boost_is_peak_limited_and_separate_from_normal_volume(monkeypatch, tmp_path):
     monkeypatch.setenv("AURUS_DEMO_TTS_GAIN_DB", "12")
     path = tmp_path / "volume.wav"
-    write_pcm(path, value=20000)
+    timeline = np.arange(24000) / 24000
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(24000)
+        output.writeframes((20000 * np.sin(2 * np.pi * 220 * timeline)).astype("<i2").tobytes())
     TTSService._boost_demo_audio(path)
     with wave.open(str(path), "rb") as source:
         samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2")
     assert 28000 < samples.max() < 30000
+
+
+def write_signal(path, samples, rate=24000):
+    channels = 1 if samples.ndim == 1 else samples.shape[1]
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(channels)
+        output.setsampwidth(2)
+        output.setframerate(rate)
+        output.writeframes(np.rint(samples * 32767).astype("<i2").tobytes())
+
+
+def read_signal(path):
+    with wave.open(str(path), "rb") as source:
+        return np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").astype(float) / 32768
+
+
+def test_compression_increases_average_level_over_old_peak_bounded_boost(tmp_path):
+    from src.services.speech_audio import enhance_demo_wav
+    timeline = np.arange(48000) / 24000
+    envelope = np.where(timeline % 0.5 < 0.05, 0.85, 0.06)
+    source = envelope * np.sin(2 * np.pi * 220 * timeline)
+    old_gain = min(10 ** (6 / 20), (10 ** (-1 / 20)) / np.max(np.abs(source)))
+    previous_rms = np.sqrt(np.mean((source * old_gain) ** 2))
+    path = tmp_path / "speech.wav"
+    write_signal(path, source)
+    enhance_demo_wav(path, gain_db=6)
+    result = read_signal(path)
+    assert np.sqrt(np.mean(result ** 2)) > previous_rms * 1.15
+    assert np.max(np.abs(result)) <= 10 ** (-1 / 20)
+
+
+def test_equalizer_emphasizes_speech_presence_over_low_bass(tmp_path):
+    from src.services.speech_audio import enhance_demo_wav
+    timeline = np.arange(24000) / 24000
+    source = 0.01 * (np.sin(2 * np.pi * 80 * timeline) + np.sin(2 * np.pi * 2400 * timeline))
+    path = tmp_path / "eq.wav"
+    write_signal(path, source)
+    enhance_demo_wav(path, gain_db=0)
+    spectrum = np.abs(np.fft.rfft(read_signal(path)))
+    assert spectrum[2400] > spectrum[80] * 2
+
+
+@pytest.mark.parametrize("channels", [1, 2])
+def test_enhancement_preserves_pcm_format_duration_and_stereo_balance(tmp_path, channels):
+    from src.services.speech_audio import enhance_demo_wav
+    timeline = np.arange(16000) / 16000
+    mono = 0.1 * np.sin(2 * np.pi * 440 * timeline)
+    source = mono if channels == 1 else np.column_stack((mono, mono * 0.5))
+    path = tmp_path / "format.wav"
+    write_signal(path, source, rate=16000)
+    enhance_demo_wav(path)
+    with wave.open(str(path), "rb") as result:
+        assert (result.getnchannels(), result.getsampwidth(), result.getframerate(), result.getnframes()) == (channels, 2, 16000, 16000)
+    if channels == 2:
+        signal = read_signal(path).reshape(-1, 2)
+        assert np.sqrt(np.mean(signal[:, 0] ** 2)) / np.sqrt(np.mean(signal[:, 1] ** 2)) == pytest.approx(2, abs=0.01)
+
+
+def test_enhancement_keeps_silence_silent(tmp_path):
+    from src.services.speech_audio import enhance_demo_wav
+    path = tmp_path / "silence.wav"
+    write_signal(path, np.zeros(2400))
+    enhance_demo_wav(path)
+    assert not np.any(read_signal(path))
+
+
+def test_demo_check_command_synthesizes_plays_and_discards_audio(monkeypatch, capsys):
+    from scripts import check_demo_tts
+    client = configure_demo_client(monkeypatch)
+    monkeypatch.setattr("sys.argv", ["check_demo_tts.py", "--play", "--device", "plughw:2,0"])
+    monkeypatch.setattr(check_demo_tts.shutil, "which", lambda name: "fake-aplay")
+    played = []
+    def play(command, **kwargs):
+        assert command[:4] == ["fake-aplay", "-q", "-D", "plughw:2,0"]
+        path = Path(command[-1])
+        assert path.exists()
+        played.append(path)
+    monkeypatch.setattr(check_demo_tts.subprocess, "run", play)
+    assert check_demo_tts.main() == 0
+    assert client.audio.speech.create.call_count >= 2
+    assert played and not played[0].exists()
+    assert "SUCCESS" in capsys.readouterr().out
+
+
+def test_demo_check_command_reports_failure_without_playback(monkeypatch, capsys):
+    from scripts import check_demo_tts
+    client = configure_demo_client(monkeypatch)
+    client.audio.speech.create.side_effect = RuntimeError("EXAMPLE_SECRET_MUST_NOT_APPEAR")
+    monkeypatch.setattr("sys.argv", ["check_demo_tts.py", "--play"])
+    play = Mock()
+    monkeypatch.setattr(check_demo_tts.subprocess, "run", play)
+    assert check_demo_tts.main() == 1
+    play.assert_not_called()
+    assert "EXAMPLE_SECRET" not in capsys.readouterr().err
 
 
 def test_missing_key_affects_only_demo_readiness(monkeypatch):
