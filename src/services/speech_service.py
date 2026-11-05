@@ -333,6 +333,7 @@ class SpeechService:
         self.speech_start_timeout = min(15.0, max(1.0, float(speech_start_timeout)))
         self.wake_requested = bool(wake_enabled)
         self.playback_active = playback_active or threading.Event()
+        self.browser_playback_active = threading.Event()
 
         self._model = None
         self._groq_client = None
@@ -767,7 +768,7 @@ class SpeechService:
             while not self._stop.is_set():
                 data = stream.read(self.FRAME_SAMPLES, exception_on_overflow=False)
 
-                if self.playback_active.is_set():
+                if self.playback_active.is_set() or self.browser_playback_active.is_set():
                     if not self._playback_was_active:
                         self._playback_was_active = True
                         playback_started = time.monotonic()

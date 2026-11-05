@@ -500,3 +500,14 @@ kbd { padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; color
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Sensor controls extend the existing awareness panel. */
+.ultrasonic-control { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border, #263c3b); }
+.sensor-authorization { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.sensor-authorization input { min-width: 0; max-width: 220px; }
+.sensor-switches { display: grid; gap: 10px; margin: 14px 0; }
+.sensor-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; font-size: 12px; }
+.sensor-control-row label { min-width: 160px; display: flex; align-items: center; gap: 8px; }
+.sensor-control-row input { accent-color: var(--accent); width: 16px; height: 16px; }
+.sensor-control-row small { color: var(--red); overflow-wrap: anywhere; }
+#sensor-coverage { color: var(--amber, #eec77b); font-size: 12px; }

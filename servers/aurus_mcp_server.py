@@ -60,6 +60,8 @@ from src.hardware.sensors import ProximitySensor
 from src.memory.repository import MemoryRepository
 from src.core.models import RobotMode
 from src.services.motion_arbiter import MotionArbiter
+from src.services.motion_execution import execute_sequence
+from src.services.distance_motion import prepare_movement, distance_feedback
 from src.services.sensor_sampler import SensorSampler
 
 # Optional imports — degrade gracefully when dependencies are missing
@@ -79,6 +81,7 @@ _tts: TTSService | None = None
 _sampler: SensorSampler | None = None
 _arbiter: MotionArbiter | None = None
 _motion_lock = threading.Lock()
+_motion_context = threading.local()
 
 
 def _init_hardware() -> None:
@@ -92,7 +95,7 @@ def _init_hardware() -> None:
         _driver = MecanumDriver()
         _sensor = ProximitySensor(_driver)
         _repo = MemoryRepository(PROJECT_ROOT / "aurus_memory.db")
-        _sampler = SensorSampler(_sensor)
+        _sampler = SensorSampler(_sensor, front_sensor_enabled=os.getenv("AURUS_FRONT_SENSOR_ENABLED", "true").lower() == "true")
         _sampler.sample_once()
         _sampler.start()
         _arbiter = MotionArbiter(_driver, _sampler)
@@ -141,31 +144,13 @@ def _execute_motion_sequence(
 ) -> tuple[bool, str]:
     """Execute standalone MCP motion through the shared safety arbiter."""
     _init_hardware()
+    _motion_context.feedback = {"obstacle_direction": None, "obstacle_distance_cm": None, "movement_cancelled": True, "motors_stopped": False}
     if not _motion_lock.acquire(blocking=False):
         return False, "another motion command is already running"
     try:
-        if not _arbiter.set_mode(RobotMode.PERFORMING):
-            return False, "emergency stop is latched"
-        for vx, vy, omega, duration in steps:
-            if not _arbiter.command(
-                "standalone-mcp", vx, vy, omega, ttl=max(0.1, duration + 0.1), priority=60
-            ):
-                return False, "motion command was rejected"
-            deadline = time.monotonic() + duration
-            while time.monotonic() < deadline:
-                if _arbiter.estopped:
-                    return False, "emergency stop is latched"
-                if _arbiter.mode != RobotMode.PERFORMING:
-                    return False, "motion was interrupted"
-                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-                decision = _arbiter.get_decision()
-                if decision.requested.source == "standalone-mcp" and not decision.allowed:
-                    return False, decision.reason
-        return True, "completed"
+        completed, reason, _motion_context.feedback = execute_sequence(_arbiter, steps, "standalone-mcp")
+        return completed, reason
     finally:
-        _arbiter.halt("standalone-mcp-stop")
-        if not _arbiter.estopped and _arbiter.mode == RobotMode.PERFORMING:
-            _arbiter.set_mode(RobotMode.IDLE)
         _motion_lock.release()
 
 
@@ -179,7 +164,9 @@ mcp = FastMCP(
         "sensors, a camera, a speaker, and persistent memory.  Use these tools "
         "to move the rover, read sensors, capture images, speak, and store "
         "memories.  Always call stop_rover() when motion is complete.  Always "
-        "read sensors before moving to ensure the path is clear."
+        "read sensors before moving to ensure the path is clear. A blocked result cancels "
+        "the objective: explain the reason using only reported measurements, never retry "
+        "or reroute without a fresh user request. Distances are calibrated time estimates."
     ),
 )
 
@@ -192,6 +179,7 @@ def move_rover(
     direction: str,
     speed: float = 1.0,
     duration: float = 1.0,
+    distance_cm: float | None = None,
 ) -> str:
     """Move AURUS in a direction for a given duration, then stop.
 
@@ -201,23 +189,26 @@ def move_rover(
                    'backward_right'.
         speed: Speed from 0.0 to 1.0 (default 1.0 — maximum torque for mecanum wheels).
         duration: Seconds to drive (default 1.0).
+        distance_cm: Optional calibrated estimated distance; overrides duration.
 
     Returns:
         JSON status with simulated position if in simulation mode.
     """
-    _init_hardware()
-    speed = max(0.0, min(1.0, speed))
-    duration = max(0.1, min(10.0, duration))
+    direction = direction.lower().replace(" ", "_")
+    try:
+        speed, duration, distance = prepare_movement(direction, speed, duration, distance_cm)
+    except (TypeError, ValueError) as exc:
+        return json.dumps({"status": "error", "message": str(exc)})
 
     direction_map = {
         "forward":        ( speed,  0.0,    0.0),
         "backward":       (-speed,  0.0,    0.0),
-        "left":           ( 0.0,    speed,  0.0),
-        "right":          ( 0.0,   -speed,  0.0),
-        "forward_left":   ( speed,  speed,  0.0),
-        "forward_right":  ( speed, -speed,  0.0),
-        "backward_left":  (-speed,  speed,  0.0),
-        "backward_right": (-speed, -speed,  0.0),
+        "left":           ( 0.0,   -speed,  0.0),
+        "right":          ( 0.0,    speed,  0.0),
+        "forward_left":   ( speed, -speed,  0.0),
+        "forward_right":  ( speed,  speed,  0.0),
+        "backward_left":  (-speed, -speed,  0.0),
+        "backward_right": (-speed,  speed,  0.0),
     }
 
     velocities = direction_map.get(direction.lower().replace(" ", "_"))
@@ -233,6 +224,8 @@ def move_rover(
     state = _driver.get_simulation_state()
     res = {
         "status": "ok" if completed else "blocked",
+        "reason": reason,
+        **_motion_context.feedback,
         "direction": direction,
         "speed": speed,
         "duration_s": duration,
@@ -246,6 +239,7 @@ def move_rover(
     }
     if _driver.is_simulation:
         res["warning"] = "Running in PC/Simulation mode. If running on Pi, check RPi.GPIO installation and pin permissions."
+    res.update(distance_feedback(distance, duration, completed, _motion_context.feedback))
     return json.dumps(res)
 
 
@@ -265,15 +259,19 @@ def spin_rover(
     _init_hardware()
     if direction.lower() not in ("left", "right"):
         return json.dumps({"status": "error", "message": f"Unknown spin direction '{direction}'."})
-    speed = max(0.0, min(1.0, speed))
-    duration = max(0.1, min(10.0, duration))
-    omega = speed if direction.lower() == "left" else -speed
+    try:
+        speed, duration, _ = prepare_movement(direction, speed, duration)
+    except (TypeError, ValueError) as exc:
+        return json.dumps({"status": "error", "message": str(exc)})
+    omega = -speed if direction.lower() == "left" else speed
 
     completed, reason = _execute_motion_sequence([(0.0, 0.0, omega, duration)])
 
     state = _driver.get_simulation_state()
     res = {
         "status": "ok" if completed else "blocked",
+        "reason": reason,
+        **_motion_context.feedback,
         "spin_direction": direction,
         "duration_s": duration,
         "simulation_mode": _driver.is_simulation,
@@ -318,6 +316,8 @@ def perform_animation(name: str) -> str:
     completed, reason = _execute_motion_sequence(sequence)
     return json.dumps({
         "status": "ok" if completed else "blocked",
+        "reason": reason,
+        **_motion_context.feedback,
         "animation": name,
         "message": f"Played '{name}' animation." if completed else f"Animation stopped: {reason}.",
     })
@@ -337,31 +337,24 @@ def read_sensors() -> str:
     - rl: Rear-Left (angled +135°)
     - rr: Rear-Right (angled -135°)
 
-    Values near 400 cm indicate nothing detected (max range / timeout).
+    Disabled, invalid, stale and timeout readings are null; never evidence of clearance.
     Values below 15 cm indicate an obstacle is dangerously close.
     """
     _init_hardware()
     snapshot = _sampler.get_snapshot()
-    readings = {
-        "fl": snapshot.fl,
-        "f": snapshot.f,
-        "fr": snapshot.fr,
-        "rl": snapshot.rl,
-        "rr": snapshot.rr,
-    }
-    front_min = min(readings["fl"], readings["f"], readings["fr"])
-    rear_min = min(readings["rl"], readings["rr"])
+    data = snapshot.as_dict()
+    clearance = snapshot.navigation_front_min()
+    caution = _arbiter.caution_cm if snapshot.center_enabled() else _arbiter.degraded_caution_cm
     return json.dumps({
-        "status": "ok",
-        "simulation_mode": _sensor.is_simulation,
-        "healthy": snapshot.healthy and not snapshot.is_stale(),
-        "error": snapshot.error,
-        "distances_cm": {k: round(v, 1) for k, v in readings.items()},
-        "front_min_cm": round(front_min, 1),
-        "rear_min_cm": round(rear_min, 1),
-        "front_clear": front_min > 40.0,
-        "rear_clear": rear_min > 40.0,
-    })
+        "status": "ok", "simulation_mode": _sensor.is_simulation,
+        "healthy": snapshot.healthy and not snapshot.is_stale(), "error": snapshot.error,
+        "distances_cm": {k: data[k] for k in ("fl", "f", "fr", "rl", "rr")},
+        "front_min_cm": clearance if data["coverage"]["front"] else None,
+        "rear_min_cm": data["rear_min"],
+        "front_clear": data["coverage"]["front"] and clearance >= caution,
+        "rear_clear": data["coverage"]["rear"] and snapshot.rear_min >= _arbiter.caution_cm,
+        "sensors": data,
+    }, allow_nan=False)
 
 
 # ── Camera Tool ────────────────────────────────────────────────────────────

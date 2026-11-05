@@ -180,6 +180,26 @@
             <div><span>Rear right</span><strong id="s-rr">—</strong><i></i></div>
           </div>
 
+          <div class="ultrasonic-control">
+            <p class="section-kicker">ULTRASONIC SENSOR CONTROL</p>
+            <div class="sensor-authorization">
+              <input id="sensor-operator-token" type="password" autocomplete="off" aria-label="Sensor operator token" placeholder="Operator token">
+              <button id="sensor-authorize" class="button">Authorize</button>
+              <button id="sensor-defaults" class="button" disabled>Restore Default Configuration</button>
+            </div>
+            <p id="sensor-coverage" role="status">Waiting for sensor health</p>
+            <div class="sensor-switches">
+              {% for key, name in [('fl', 'Front Left — FL'), ('f', 'Front Center — F'), ('fr', 'Front Right — FR'), ('rl', 'Rear Left — RL'), ('rr', 'Rear Right — RR')] %}
+              <div class="sensor-control-row">
+                <label><input id="sensor-toggle-{{ key }}" type="checkbox" data-sensor="{{ key }}" role="switch" disabled> {{ name }}</label>
+                <span id="sensor-health-{{ key }}">Initializing</span>
+                <small id="sensor-error-{{ key }}"></small>
+              </div>
+              {% endfor %}
+            </div>
+            <small>Runtime settings reset at restart. Disabled sensors never imply a clear path.</small>
+          </div>
+
           <div class="decision">
             <div class="decision-icon" aria-hidden="true"></div>
             <div>

@@ -32,8 +32,9 @@ class RobotRuntime:
         self.sensor = ProximitySensor(self.driver)
         self.repository = MemoryRepository(self.project_root / "aurus_memory.db")
         self.identity = IdentityService(self.repository)
-        self.sensor_sampler = SensorSampler(self.sensor)
         front_sensor_enabled = os.getenv("AURUS_FRONT_SENSOR_ENABLED", "true").lower() == "true"
+        self._default_front_sensor_enabled = front_sensor_enabled
+        self.sensor_sampler = SensorSampler(self.sensor, front_sensor_enabled=front_sensor_enabled)
         self.arbiter = MotionArbiter(
             self.driver,
             self.sensor_sampler,
@@ -197,6 +198,18 @@ class RobotRuntime:
         if self.arbiter.mode != RobotMode.MANUAL:
             return False
         return self.arbiter.command("dashboard-manual", vx, vy, omega, ttl=0.25, priority=50)
+
+    def configure_sensor(self, key=None, enabled=None, restore=False) -> dict:
+        # Called only by the authenticated adapter; no GPIO numbers accepted.
+        if restore:
+            self.sensor_sampler.restore_defaults(self._default_front_sensor_enabled)
+        else:
+            self.sensor_sampler.set_enabled(key, enabled)
+        # Configuration invalidation is synchronous. No AI/audio on this path.
+        self.arbiter.tick()
+        data = self.sensor_sampler.get_snapshot().as_dict()
+        self.emit("sensor_configuration", data)
+        return data
 
     def emergency_stop(self) -> None:
         behavior = getattr(self, "behavior", None)

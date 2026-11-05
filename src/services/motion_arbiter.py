@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from dataclasses import replace
 
 from src.core.models import MotionCommand, MotionDecision, RobotMode
 
@@ -39,6 +40,8 @@ class MotionArbiter:
         self._mode = RobotMode.IDLE
         self._estop = False
         self._dashboard_connected = False
+        self._cancelled = False
+        self._last_blocked: MotionDecision | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -77,6 +80,7 @@ class MotionArbiter:
                 return False
             self._mode = mode
             self._command = MotionCommand.stop("mode-change")
+            self._cancelled = False
         self.driver.stop()
         return True
 
@@ -109,6 +113,8 @@ class MotionArbiter:
         with self._lock:
             if self._estop:
                 return False
+            if self._cancelled and any(values):
+                return False
             if any((bounded.vx, bounded.vy, bounded.omega)) and not self._dashboard_connected:
                 return False
             current_is_moving = any((self._command.vx, self._command.vy, self._command.omega))
@@ -138,6 +144,11 @@ class MotionArbiter:
         with self._lock:
             return self._decision
 
+    def get_last_blocked(self) -> MotionDecision | None:
+        """Retain cancellation evidence after idle ticks and mode changes."""
+        with self._lock:
+            return self._last_blocked
+
     def _evaluate(self, command: MotionCommand) -> MotionDecision:
         now = time.time()
         sensors = self.sensor_sampler.get_snapshot()
@@ -151,27 +162,51 @@ class MotionArbiter:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "dashboard disconnected")
         if command.expired:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "command expired (deadman stop)")
-        if sensors.is_stale(self.stale_after):
+        if not any((command.vx, command.vy, command.omega)):
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, True, "stopped")
+        if not sensors.states and sensors.is_stale(self.stale_after):
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "sensor data stale or unhealthy")
         distances = (sensors.fl, sensors.f, sensors.fr, sensors.rl, sensors.rr)
-        if not all(math.isfinite(value) and value >= 0.0 for value in distances):
+        if not sensors.states and not all(math.isfinite(value) and value >= 0.0 for value in distances):
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "sensor data invalid")
 
         vx, vy, omega = command.vx, command.vy, command.omega
         reason = "allowed"
 
+        coverage = sensors.coverage(self.stale_after, self.front_sensor_enabled)
+        required = []
+        if vx > 0:
+            required.append("front")
+        if vx < 0:
+            required.append("rear")
+        if vy < 0:
+            required.append("left")
+        if vy > 0:
+            required.append("right")
+        if omega:
+            required.append("rotation")
+        for direction in required:
+            if not coverage[direction]:
+                return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"{direction} sensor coverage insufficient (disabled, initializing, invalid or stale)")
+
         front_clearance = sensors.navigation_front_min(self.front_sensor_enabled)
-        front_hard_stop = self.hard_stop_cm if self.front_sensor_enabled else self.degraded_hard_stop_cm
-        front_caution = self.caution_cm if self.front_sensor_enabled else self.degraded_caution_cm
+        center_enabled = sensors.center_enabled(self.front_sensor_enabled)
+        front_hard_stop = self.hard_stop_cm if center_enabled else self.degraded_hard_stop_cm
+        front_caution = self.caution_cm if center_enabled else self.degraded_caution_cm
 
         if vx > 0 and front_clearance < front_hard_stop:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"front obstacle {front_clearance:.1f} cm")
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"front obstacle {front_clearance:.1f} cm", "front", front_clearance)
         if vx < 0 and sensors.rear_min < self.hard_stop_cm:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"rear obstacle {sensors.rear_min:.1f} cm")
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"rear obstacle {sensors.rear_min:.1f} cm", "rear", sensors.rear_min)
         if vy < 0 and min(sensors.fl, sensors.rl) < self.hard_stop_cm:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "left-side obstacle")
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "left-side obstacle", "left", min(sensors.fl, sensors.rl))
         if vy > 0 and min(sensors.fr, sensors.rr) < self.hard_stop_cm:
-            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "right-side obstacle")
+            return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "right-side obstacle", "right", min(sensors.fr, sensors.rr))
+        if omega:
+            key = min(zip(("fl", "f", "fr", "rl", "rr"), distances), key=lambda item: item[1])
+            if key[1] < self.hard_stop_cm:
+                direction = {"fl": "left", "f": "front", "fr": "right", "rl": "rear", "rr": "rear"}[key[0]]
+                return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"{direction} obstacle {key[1]:.1f} cm during rotation", direction, key[1])
 
         if vx > 0 and front_clearance < front_caution:
             vx *= 0.35
@@ -183,19 +218,52 @@ class MotionArbiter:
         return MotionDecision(now, command, vx, vy, omega, True, reason)
 
     def tick(self) -> MotionDecision:
+        # Serialize evaluation/output with emergency stop and configuration changes.
         with self._lock:
             command = self._command
-        decision = self._evaluate(command)
-        try:
-            self.driver.drive(decision.final_vx, decision.final_vy, decision.final_omega)
-        except Exception as exc:
-            self.driver.stop()
-            decision = MotionDecision(
-                time.time(), command, 0.0, 0.0, 0.0, False, f"motor driver error: {str(exc)[:120]}"
-            )
-        with self._lock:
+            if self._cancelled and not self._estop:
+                # Retry failed zero output while keeping cancellation latched.
+                if not self._decision.motors_stopped:
+                    try:
+                        self.driver.stop()
+                        self._decision = replace(self._decision, motors_stopped=True)
+                        self._last_blocked = self._decision
+                    except Exception:
+                        pass
+                return self._decision
+            try:
+                decision = self._evaluate(command)
+            except Exception as exc:
+                decision = MotionDecision(
+                    time.time(), command, 0.0, 0.0, 0.0, False,
+                    f"safety evaluation failed: {str(exc)[:120]}",
+                )
+            stopped = False
+            try:
+                if not decision.allowed or not any((decision.final_vx, decision.final_vy, decision.final_omega)):
+                    self.driver.stop()
+                    stopped = True
+                else:
+                    self.driver.drive(decision.final_vx, decision.final_vy, decision.final_omega)
+            except Exception as exc:
+                try:
+                    self.driver.stop()
+                    stopped = True
+                except Exception:
+                    pass
+                decision = MotionDecision(
+                    time.time(), command, 0.0, 0.0, 0.0, False, f"motor driver error: {str(exc)[:120]}"
+                )
+            cancelled = not decision.allowed and any((command.vx, command.vy, command.omega))
+            decision = replace(decision, movement_cancelled=bool(cancelled), motors_stopped=stopped)
+            if cancelled:
+                self._command = MotionCommand.stop("safety-cancelled")
+                self._cancelled = True
+                self._last_blocked = decision
+                if not self._estop:
+                    self._mode = RobotMode.IDLE
             self._decision = decision
-        return decision
+            return decision
 
     def _run(self) -> None:
         while not self._stop.is_set():

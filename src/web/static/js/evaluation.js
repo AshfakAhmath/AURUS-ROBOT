@@ -3,16 +3,23 @@ let driveSequence = 0;
 let driveTimer = null;
 let latestSensors = null;
 let robotSpeaking = false;
+let browserAudioPlaying = false;
+let browserAudioCount = 0;
+let sensorControlAuthorized = false;
 let browserMicActive = false;
 
 const $ = (id) => document.getElementById(id);
-const fmtDistance = (value) => Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)} cm` : '—';
+const fmtDistance = (value) => value != null && Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)} cm` : 'N/A';
 
 socket.on('connect', () => {
   $('connection').innerHTML = '<i></i> Connected';
   $('connection').className = 'pill good';
 });
 socket.on('disconnect', () => {
+  sensorControlAuthorized = false;
+  document.querySelectorAll('[data-sensor]').forEach(input => { input.disabled = true; });
+  $('sensor-defaults').disabled = true;
+  endDrive();
   $('connection').innerHTML = '<i></i> Offline';
   $('connection').className = 'pill bad';
 });
@@ -24,6 +31,24 @@ socket.on('conversation', renderConversation);
 socket.on('telemetry', renderTelemetry);
 socket.on('mission_update', renderMission);
 socket.on('play_audio', handleBrowserAudio);
+socket.on('sensor_configuration', renderSensorControl);
+socket.on('sensor_control_authorized', ({authorized}) => {
+  sensorControlAuthorized = Boolean(authorized);
+  document.querySelectorAll('[data-sensor]').forEach(input => { input.disabled = !sensorControlAuthorized; });
+  $('sensor-defaults').disabled = !sensorControlAuthorized;
+});
+
+function renderSensorControl(sensors) {
+  for (const [key, state] of Object.entries(sensors.states || {})) {
+    $(`sensor-toggle-${key}`).checked = state.enabled;
+    $(`sensor-health-${key}`).textContent = `${state.enabled ? 'ON' : 'OFF'} · ${fmtDistance(state.distance_cm)} · ${state.status} · ${state.age_ms == null ? 'N/A' : Math.round(state.age_ms) + ' ms'}`;
+    $(`sensor-error-${key}`).textContent = state.error || '';
+  }
+  const restricted = Object.entries(sensors.coverage || {}).filter(([, valid]) => !valid).map(([direction]) => direction);
+  $('sensor-coverage').textContent = sensors.reduced_coverage
+    ? `Reduced coverage. Restricted: ${restricted.join(', ') || 'front-center degraded mode (45/75 cm margins)'}.`
+    : 'All five sensors healthy; full configured coverage.';
+}
 
 let missionDiscoverySignature = '';
 
@@ -31,10 +56,12 @@ function renderTelemetry(data) {
   $('mode').textContent = data.mode;
   document.querySelectorAll('[data-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === data.mode));
   latestSensors = data.sensors;
-  robotSpeaking = Boolean(data.health && data.health.audio_playback);
+  robotSpeaking = browserAudioPlaying || Boolean(data.health && data.health.audio_playback);
+  renderSensorControl(data.sensors);
   for (const key of ['fl','f','fr','rl','rr']) $(`s-${key}`).textContent = fmtDistance(data.sensors[key]);
   $('sensor-age').textContent = data.sensors.age_ms == null ? 'stale' : `${data.sensors.age_ms.toFixed(0)} ms`;
   const decision = data.motion;
+  if (decision.movement_cancelled && driveTimer) endDrive();
   $('decision').textContent = decision.reason;
   $('decision').style.color = decision.allowed ? 'var(--green)' : 'var(--red)';
   $('motion-vector').textContent = `Final · ${decision.final.vx.toFixed(2)} / ${decision.final.vy.toFixed(2)} / ${decision.final.omega.toFixed(2)}`;
@@ -67,22 +94,35 @@ window.addEventListener('keydown', unlockAudioContext, { once: true });
 
 function handleBrowserAudio({data, format}) {
   if (!data) return;
+  let finishAudio = () => {};
   try {
     const mime = format === 'wav' ? 'audio/wav' : 'audio/mpeg';
     const audio = new Audio(`data:${mime};base64,${data}`);
     robotSpeaking = true;
-    audio.onended = () => { robotSpeaking = false; };
-    audio.onerror = () => { robotSpeaking = false; };
+    browserAudioCount += 1;
+    browserAudioPlaying = true;
+    socket.emit('browser_audio_state', {playing: true});
+    let finished = false;
+    finishAudio = () => {
+      if (finished) return;
+      finished = true;
+      browserAudioCount = Math.max(0, browserAudioCount - 1);
+      browserAudioPlaying = browserAudioCount > 0;
+      robotSpeaking = browserAudioPlaying;
+      socket.emit('browser_audio_state', {playing: browserAudioPlaying});
+    };
+    audio.onended = finishAudio;
+    audio.onerror = finishAudio;
     const playPromise = audio.play();
     if (playPromise !== undefined) {
       playPromise.catch(err => {
-        robotSpeaking = false;
+        finishAudio();
         console.warn('[Browser Audio] Playback prevented:', err);
         $('error').textContent = 'Click on the page to allow PC speaker audio playback';
       });
     }
   } catch (err) {
-    robotSpeaking = false;
+    finishAudio();
     console.error('[Browser Audio Error]', err);
   }
 }
@@ -192,7 +232,8 @@ function drawRadar(s) {
     ['fl', -135], ['f', -90], ['fr', -45], ['rl', 145], ['rr', 35]
   ];
   readings.forEach(([key, deg]) => {
-    const distance = Math.min(200, Number(s[key] || 200));
+    if (s[key] == null || !Number.isFinite(Number(s[key]))) return;
+    const distance = Math.min(200, Number(s[key]));
     const radius = distance / 200 * maxRadius;
     const angle = deg * Math.PI / 180;
     const x = cx + Math.cos(angle) * radius;
@@ -399,6 +440,14 @@ function toggleBrowserMic() {
 }
 
 $('send').onclick = sendText;
+$('sensor-authorize').onclick = () => {
+  socket.emit('authorize_sensor_control', {token: $('sensor-operator-token').value});
+  $('sensor-operator-token').value = '';
+};
+$('sensor-defaults').onclick = () => socket.emit('set_sensor_enabled', {restore_defaults: true});
+document.querySelectorAll('[data-sensor]').forEach(input => {
+  input.onchange = () => socket.emit('set_sensor_enabled', {sensor: input.dataset.sensor, enabled: input.checked});
+});
 if ($('browser-mic')) $('browser-mic').onclick = toggleBrowserMic;
 $('message').addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
 $('listen').onclick = () => socket.emit('start_listening', {});

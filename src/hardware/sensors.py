@@ -69,22 +69,22 @@ class ProximitySensor:
         time.sleep(0.00001)
         GPIO.output(trig_pin, GPIO.LOW)
 
-        pulse_start = time.time()
-        pulse_end = time.time()
+        pulse_start = time.monotonic()
+        pulse_end = time.monotonic()
 
         # Wait for Echo to go high (timeout after 0.02s)
-        timeout = time.time() + 0.02
+        timeout = time.monotonic() + 0.02
         while GPIO.input(echo_pin) == 0:
-            pulse_start = time.time()
+            pulse_start = time.monotonic()
             if pulse_start > timeout:
-                return 400.0  # Return max range on timeout
+                raise TimeoutError("missing echo (rise timeout)")
 
         # Wait for Echo to go low (timeout after 0.02s)
-        timeout = time.time() + 0.02
+        timeout = time.monotonic() + 0.02
         while GPIO.input(echo_pin) == 1:
-            pulse_end = time.time()
+            pulse_end = time.monotonic()
             if pulse_end > timeout:
-                return 400.0
+                raise TimeoutError("echo stuck high (fall timeout)")
 
         pulse_duration = pulse_end - pulse_start
         # Speed of sound is 34300 cm/s. Distance is speed * time / 2

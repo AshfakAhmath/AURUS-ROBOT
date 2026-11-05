@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import hmac
 
 from flask import Flask, Response, jsonify, render_template, request
 from flask_socketio import SocketIO, emit
@@ -23,6 +24,9 @@ def create_app(runtime):
     clients: set[str] = set()
     clients_lock = threading.Lock()
     telemetry_stop = threading.Event()
+    sensor_operators: set[str] = set()
+    sensor_token = os.getenv("AURUS_SENSOR_OPERATOR_TOKEN", "")
+    browser_speakers: set[str] = set()
 
     runtime.set_event_sink(lambda event, payload: socketio.emit(event, payload))
 
@@ -60,7 +64,56 @@ def create_app(runtime):
     def on_disconnect():
         with clients_lock:
             clients.discard(request.sid)
+            sensor_operators.discard(request.sid)
+            browser_speakers.discard(request.sid)
+            speech = getattr(runtime, "speech", None)
+            if speech is not None and not browser_speakers:
+                speech.browser_playback_active.clear()
             runtime.dashboard_connected(bool(clients))
+
+    @socketio.on("browser_audio_state")
+    def browser_audio_state(data):
+        speech = getattr(runtime, "speech", None)
+        if speech is None:
+            return
+        with clients_lock:
+            if payload(data).get("playing") is True:
+                browser_speakers.add(request.sid)
+            else:
+                browser_speakers.discard(request.sid)
+            if browser_speakers:
+                speech.browser_playback_active.set()
+            else:
+                speech.browser_playback_active.clear()
+
+    @socketio.on("authorize_sensor_control")
+    def authorize_sensor_control(data):
+        supplied = payload(data).get("token", "")
+        if sensor_token and isinstance(supplied, str) and hmac.compare_digest(supplied.encode(), sensor_token.encode()):
+            with clients_lock:
+                sensor_operators.add(request.sid)
+            emit("sensor_control_authorized", {"authorized": True})
+        else:
+            with clients_lock:
+                sensor_operators.discard(request.sid)
+            emit("sensor_control_authorized", {"authorized": False})
+            emit("command_error", {"message": "Sensor control authorization rejected. Configure AURUS_SENSOR_OPERATOR_TOKEN on the Pi and enter its value."})
+
+    @socketio.on("set_sensor_enabled")
+    def set_sensor_enabled(data):
+        with clients_lock:
+            authorized = request.sid in sensor_operators
+        if not authorized:
+            emit("command_error", {"message": "Unauthorized sensor configuration change."})
+            return
+        data = payload(data)
+        try:
+            if data.get("restore_defaults") is True:
+                runtime.configure_sensor(restore=True)
+            else:
+                runtime.configure_sensor(data.get("sensor"), data.get("enabled"))
+        except (TypeError, ValueError) as exc:
+            emit("command_error", {"message": str(exc)})
 
     @socketio.on("manual_drive")
     def manual_drive(data):

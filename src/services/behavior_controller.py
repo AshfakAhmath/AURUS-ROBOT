@@ -95,7 +95,7 @@ class BehaviorController:
         people_word = "person" if summary["people"] == 1 else "people"
         route_word = "time" if summary["route_changes"] == 1 else "times"
         summary["text"] = (
-            f"Exploration complete. In {elapsed} seconds I recorded "
+            f"Exploration ended. In {elapsed} seconds I recorded "
             f"{summary['observations']} {discovery_word}, encountered "
             f"{summary['people']} {people_word}, and safely changed route "
             f"{summary['route_changes']} {route_word}."
@@ -215,8 +215,10 @@ class BehaviorController:
             self.event_callback("greeting_unknown", {})
 
     def _explore(self) -> None:
+        if self.arbiter.mode != RobotMode.EXPLORING:
+            return
         sensors = self.sensor_sampler.get_snapshot()
-        center_enabled = getattr(self.arbiter, "front_sensor_enabled", True)
+        center_enabled = sensors.center_enabled(getattr(self.arbiter, "front_sensor_enabled", True))
         clearance = sensors.navigation_front_min(center_enabled)
         caution_cm = (
             self.arbiter.caution_cm
@@ -231,36 +233,22 @@ class BehaviorController:
             )
             return
 
-        if clearance < caution_cm and not self._obstacle_active:
-            self._obstacle_active = True
-            self._last_obstacle_notice = now
-            direction = "right" if sensors.fl < sensors.fr else "left"
+        # Cancel the mission before any notice/TTS/cloud work; never reroute.
+        coverage = sensors.coverage(center_default=center_enabled)
+        if not coverage["front"] or clearance < caution_cm:
+            self.arbiter.halt("explore-obstacle-stop")
+            self.arbiter.set_mode(RobotMode.IDLE)
             with self._mission_lock:
                 if self._mission_active:
                     self._mission_obstacles += 1
-                    self._mission_route_changes += 1
             self._add_discovery(
-                "route", "Route adjustment",
-                f"My path is blocked at {clearance:.0f} centimetres, so I am checking the {direction} route.",
+                "route", "Exploration cancelled",
+                "I stopped exploring because the path is blocked or sensor coverage is insufficient. A fresh command is required.",
                 speak=True,
             )
-        elif clearance >= caution_cm + 10.0:
-            self._obstacle_active = False
+            return
 
-        if clearance < caution_cm:
-            self._explore_turn_direction = -1.0 if sensors.fl < sensors.fr else 1.0
-            self._explore_turn_until = max(self._explore_turn_until, now + 0.8)
-            self._explore_scan_at = now + 1.5
-            self.arbiter.command(
-                "explore-avoid", 0.0, 0.0, 0.32 * self._explore_turn_direction,
-                ttl=0.2, priority=20,
-            )
-        elif now < self._explore_turn_until:
-            self.arbiter.command(
-                "explore-avoid", 0.0, 0.0, 0.32 * self._explore_turn_direction,
-                ttl=0.2, priority=20,
-            )
-        elif self._scan_lock.locked():
+        if self._scan_lock.locked():
             return
         elif now >= self._explore_scan_at:
             self._explore_scan_at = now + random.uniform(14.0, 20.0)
@@ -365,13 +353,15 @@ class BehaviorController:
                     break
                 end = time.monotonic() + duration
                 while time.monotonic() < end and not self._stop.is_set():
+                    if self.arbiter.estopped or self.arbiter.mode != RobotMode.PERFORMING:
+                        return
                     self.arbiter.command("showcase", vx, vy, omega, ttl=0.15, priority=40)
                     time.sleep(0.08)
                 self.arbiter.halt("showcase-step")
                 time.sleep(0.12)
         finally:
             self.arbiter.halt("showcase-complete")
-            if not self.arbiter.estopped:
+            if not self.arbiter.estopped and self.arbiter.mode == RobotMode.PERFORMING:
                 self.arbiter.set_mode(RobotMode.IDLE)
                 self.event_callback("behavior_notice", {"text": "Showcase complete. All motion stopped."})
 

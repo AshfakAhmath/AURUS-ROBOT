@@ -302,6 +302,13 @@ class CuriosityMissionTests(unittest.TestCase):
             self.commands.append((source, vx, vy, omega, ttl, priority))
             return True
 
+        def halt(self, source):
+            self.commands.append((source, 0, 0, 0, 0, 100))
+
+        def set_mode(self, mode):
+            self.mode = mode
+            return True
+
     class DiscoveryAgent:
         def __init__(self, observation="A red chair is visible ahead."):
             self.observation = observation
@@ -342,22 +349,23 @@ class CuriosityMissionTests(unittest.TestCase):
         self.assertFalse(controller.mission_snapshot()["active"])
         self.assertEqual(events[0][0], "mission_update")
 
-    def test_obstacle_episode_is_counted_once_until_path_clears(self):
+    def test_obstacle_cancels_exploration_without_automatic_rerouting(self):
         controller, arbiter, sampler, events = self.build(snapshot(fl=22, f=18, fr=60))
         controller.begin_exploration()
         controller._explore()
         controller._explore()
         mission = controller.mission_snapshot()
         self.assertEqual(mission["obstacles"], 1)
-        self.assertEqual(mission["route_changes"], 1)
+        self.assertEqual(mission["route_changes"], 0)
         self.assertTrue(any(event == "discovery" for event, _ in events))
-        self.assertTrue(any(command[0] == "explore-avoid" for command in arbiter.commands))
+        self.assertFalse(any(command[0] == "explore-avoid" for command in arbiter.commands))
+        self.assertEqual(arbiter.mode, RobotMode.IDLE)
 
         sampler.snapshot = snapshot()
         controller._explore()
         sampler.snapshot = snapshot(fl=60, f=18, fr=22)
         controller._explore()
-        self.assertEqual(controller.mission_snapshot()["obstacles"], 2)
+        self.assertEqual(controller.mission_snapshot()["obstacles"], 1)
 
     def test_repeated_visual_observation_is_suppressed(self):
         agent = self.DiscoveryAgent()
