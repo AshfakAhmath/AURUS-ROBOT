@@ -45,11 +45,18 @@ Enable **Browser Mic**, say “Hey AURUS”, then speak the command when the but
 Keep the command center open on the operator laptop. Select **Open Face Display**
 or open `http://<raspberry-pi-ip>:5000/face` in a second window, move it to the
 external monitor, and enter browser fullscreen. The display shows AURUS's current
-expression and reconnects automatically. Keep dashboard access on the operator network.
+expression and reconnects automatically. While AURUS speaks, the spoken sentence
+appears below the face and clears when playback ends. This includes ordinary
+replies, object announcements and FIT Expo narration, through Pi or PC audio.
+Keep dashboard access on the operator network.
 
 With the camera running, hold up a prop and select **Detect Objects** under the
 live feed. AURUS sends one camera frame to Groq Vision and lists the object labels
-on the command center. To hear the result, use voice or type `Identify this object`.
+on the command center, then speaks a short result using the normal conversation
+voice, for example, "I see a red mug and a notebook." Voice or typed
+`Identify this object` requests also speak once. Camera-off or stale scans do
+not queue an announcement; queued button results are checked again before
+playback. Audio already playing can finish.
 Keep `GROQ_VISION_MODEL=qwen/qwen3.8-27b` in the Pi's `.env` and verify the feature
 with the exhibition connection before presenting.
 

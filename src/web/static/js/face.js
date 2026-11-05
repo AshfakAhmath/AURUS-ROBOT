@@ -1,6 +1,7 @@
 const display = document.getElementById('face-display');
 const caption = document.getElementById('expression-caption');
 const connection = document.getElementById('display-link');
+const transcript = document.getElementById('speech-transcript');
 const captions = {
   idle: 'Hello, I’m AURUS',
   listening: 'I’m listening',
@@ -12,8 +13,12 @@ const captions = {
   offline: 'Waiting for AURUS',
 };
 
-function showExpression(expression) {
+function showExpression(expression, spokenText = '') {
   if (!Object.hasOwn(captions, expression)) expression = 'offline';
+  const text = expression === 'speaking' && typeof spokenText === 'string' ? spokenText : '';
+  if (transcript.textContent !== text) transcript.textContent = text;
+  transcript.hidden = !text;
+  display.classList.toggle('has-transcript', Boolean(text));
   if (display.dataset.expression === expression && caption.textContent === captions[expression]) return;
   display.dataset.expression = expression;
   caption.textContent = captions[expression];
@@ -27,7 +32,7 @@ async function pollExpression() {
     const response = await fetch(display.dataset.stateUrl, {cache: 'no-store', signal: controller.signal});
     if (!response.ok) throw new Error('Display state unavailable');
     const state = await response.json();
-    showExpression(state.expression);
+    showExpression(state.expression, state.transcript);
   } catch {
     showExpression('offline');
   } finally {

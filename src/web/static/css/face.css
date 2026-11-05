@@ -11,7 +11,7 @@ body { margin: 0; }
 .display {
   --glow: #77fbe1;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: auto 1fr auto auto;
   min-height: 100vh;
   min-height: 100dvh;
   padding: clamp(16px, 4vmin, 52px) clamp(20px, 5vmin, 72px);
@@ -74,6 +74,9 @@ body { margin: 0; }
 }
 
 .display-footer { display: grid; justify-items: center; gap: 1vmin; }
+.speech-transcript { width: min(100%, 1100px); justify-self: center; margin: 0 0 clamp(14px, 2.5vmin, 28px); color: #e9f9fb; text-align: center; font-size: clamp(18px, 2.8vmin, 32px); line-height: 1.4; overflow-wrap: anywhere; }
+.speech-transcript[hidden] { display: none; }
+.has-transcript .visor { width: min(76vw, 80vh, 960px); }
 .display-footer p { margin: 0; font-size: clamp(18px, 4vmin, 42px); font-weight: 550; letter-spacing: .015em; }
 .expression-indicator { width: 3vmin; min-width: 18px; height: 3px; border-radius: 9px; background: var(--glow); }
 

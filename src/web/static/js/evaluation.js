@@ -148,7 +148,7 @@ function scanObjects() {
       return;
     }
     if (result.status !== 'ok' || !result.objects.length) {
-      $('object-status').textContent = result.message;
+      $('object-status').textContent = result.message + (result.speech_queued === false ? ' Speech was not queued. Please try again.' : '');
       return;
     }
     for (const label of result.objects) {
@@ -157,7 +157,8 @@ function scanObjects() {
       list.append(item);
     }
     list.hidden = false;
-    $('object-status').textContent = result.objects.length === 1 ? '1 object identified' : `${result.objects.length} objects identified`;
+    const countLabel = result.objects.length === 1 ? '1 object identified' : `${result.objects.length} objects identified`;
+    $('object-status').textContent = countLabel + (result.speech_queued === false ? ' · Speech was not queued. Please try again.' : '');
   });
 }
 socket.on('sensor_configuration', renderSensorControl);
@@ -230,7 +231,7 @@ function unlockAudioContext() {
 window.addEventListener('click', unlockAudioContext, { once: true });
 window.addEventListener('keydown', unlockAudioContext, { once: true });
 
-function handleBrowserAudio({data, format, playback_id}) {
+function handleBrowserAudio({data, format, playback_id, audio_id}) {
   if (!data) return;
   let finishAudio = () => {};
   try {
@@ -248,12 +249,13 @@ function handleBrowserAudio({data, format, playback_id}) {
       browserAudioCount = Math.max(0, browserAudioCount - 1);
       browserAudioPlaying = browserAudioCount > 0;
       robotSpeaking = browserAudioPlaying;
-      socket.emit('browser_audio_state', {playing: browserAudioPlaying});
+      socket.emit('browser_audio_state', {playing: browserAudioPlaying, audio_id, finished: true});
       if (playback_id) {
         demoAudio.delete(audio);
         socket.emit('demo_audio_finished', {playback_id, success});
       }
     };
+    audio.onplaying = () => socket.emit('browser_audio_state', {playing: true, audio_id});
     audio.onended = () => finishAudio(true);
     audio.onerror = () => finishAudio(false);
     const playPromise = audio.play();

@@ -50,7 +50,9 @@ def create_app(runtime):
     def face_state():
         with clients_lock:
             operator_busy = active_text_requests > 0
-        response = jsonify(expression=runtime.face_expression(operator_busy))
+        expression = runtime.face_expression(operator_busy)
+        response = jsonify(expression=expression,
+                           transcript=runtime.tts.speaking_text if expression == "speaking" else "")
         response.cache_control.no_store = True
         return response
 
@@ -90,6 +92,9 @@ def create_app(runtime):
             if speech is not None and not browser_speakers:
                 speech.browser_playback_active.clear()
             runtime.dashboard_connected(bool(clients))
+        clear_caption = getattr(getattr(runtime, "tts", None), "clear_browser_audio", None)
+        if callable(clear_caption):
+            clear_caption(request.sid)
         demo = getattr(runtime, "demo", None)
         if demo is not None:
             demo.owner_disconnected(request.sid)
@@ -106,6 +111,14 @@ def create_app(runtime):
         speech = getattr(runtime, "speech", None)
         if speech is None:
             return
+        data = payload(data)
+        tracker = getattr(getattr(runtime, "tts", None), "track_browser_audio", None)
+        if callable(tracker) and isinstance(data.get("audio_id"), str):
+            tracker(request.sid, data["audio_id"], data.get("playing") is True and data.get("finished") is not True)
+        if data.get("playing") is False:
+            clear_caption = getattr(getattr(runtime, "tts", None), "clear_browser_audio", None)
+            if callable(clear_caption):
+                clear_caption(request.sid)
         with clients_lock:
             if payload(data).get("playing") is True:
                 browser_speakers.add(request.sid)
@@ -245,7 +258,7 @@ def create_app(runtime):
 
     @socketio.on("detect_objects")
     def detect_objects(_data=None):
-        return runtime.detect_objects()
+        return runtime.detect_objects(speak_result=True)
 
     @socketio.on("run_mcp_agent")
     def run_mcp_agent(data):

@@ -11,6 +11,8 @@ valid-sensor policy is unchanged: partial coverage is a warning and strict
 coverage is opt-in. Earlier sections retain the history of prior revisions.
 Section T adds the dashboard camera ON/OFF control, fresh-session checks and
 camera-off exploration pause without changing speech or ultrasonic policy.
+Section V adds brief dashboard object announcements through normal TTS and
+playback-linked transcripts below the exhibition face.
 
 ## A. Overview
 
@@ -1244,3 +1246,47 @@ Verification:
 No force update, history reset, Pi deployment, service operation, physical
 hardware test or live Groq request was performed. This integration addresses
 the ordinary non-fast-forward push while preserving both development histories.
+
+## V. Spoken Object Results and Face Transcripts — 2026-11-05
+
+Started from clean main at `033cbcb7298c54f2c7c6722e940c83573d4df02e`.
+The Detect Objects button now queues one short result through ordinary TTS,
+naming up to three objects and saying "and more" for longer lists. A valid
+empty result asks the operator to try again. Voice/typed object requests retain
+their existing single announcement. Visual results survive unavailable speech.
+Camera-off, failed and stale scans do not queue announcements; queued button
+results recheck camera freshness before synthesis and playback without invoking
+a fallback on cancellation. Audio that has already started may finish.
+
+The read-only `/face` display now shows the current utterance beneath the face
+while local or browser audio plays. Ordinary replies, object results and live
+Groq demo narration share this caption path. Server-issued audio IDs associate
+browser playback with its original text even while another reply is synthesized.
+Browser endings/disconnects clear captions; client-supplied text is not used.
+The face keeps its existing emergency-stop priority and clears text on offline
+or non-speaking states. Captions use plain text, wrap on screen, and update
+whole utterances through the existing 300 ms polling; no word timing is claimed.
+Normal voice selection, demo Groq voice, EQ, motor and sensor policy are unchanged.
+
+Implementation files: `src/runtime.py`, `src/services/tts_service.py`,
+`src/web/app.py`, `src/web/static/js/evaluation.js`, `src/web/static/js/face.js`,
+`src/web/static/css/face.css`, and `src/web/templates/face.html`. Added
+`tests/test_object_speech.py`, extended the camera/evaluation checks and updated
+`pytest.ini`, README and the manual Pi guide.
+
+Verification:
+
+- Targeted speech/camera/evaluation checks: **99 passed, 2 skipped**.
+- Full `python -m pytest -q -rs`: **273 passed, 0 failed, 2 skipped**, 15.24 s.
+  The existing OpenCV-unavailable skips and pytest-asyncio deprecation warning
+  remain. All cloud, audio and hardware behavior used mocks/simulation.
+- Isolated headless Edge: **9 face-caption assertions** and **30 dashboard
+  assertions** passed, including same-expression text changes, clearing, plain
+  text rendering, long captions, and browser audio start/end IDs. Visually
+  reviewed the face screenshot at desktop resolution without clipping.
+- Source parsing, JavaScript syntax and diff whitespace checks passed.
+
+No live API, physical device, private `.env` or key, Pi deployment, service
+change, commit or push was involved. Restart the updated Pi application and
+hard-refresh both browser pages; no additional environment setting or package
+is required. Actual speaker output and display timing remain operator Pi checks.

@@ -288,11 +288,12 @@ def test_mcp_camera_tool_rejects_off_and_discards_late_result(vision):
     assert result['status'] == 'error' and 'STALE_PERSON' not in str(result)
 
 
-def test_object_scan_respects_camera_off_and_discards_old_session(vision):
+@pytest.mark.parametrize('speak_result', [False, True])
+def test_object_scan_respects_camera_off_and_discards_old_session(vision, speak_result):
     runtime = runtime_for(vision)
     runtime.groq_vision = Mock(ready=True)
     runtime.set_camera_enabled(False)
-    result = runtime.detect_objects()
+    result = runtime.detect_objects(speak_result=speak_result)
     assert result['status'] == 'error' and 'switched off' in result['message']
     runtime.groq_vision.detect_objects.assert_not_called()
     runtime.set_camera_enabled(True)
@@ -303,9 +304,10 @@ def test_object_scan_respects_camera_off_and_discards_old_session(vision):
         fresh_snapshot(vision)
         return ['STALE_OBJECT']
     runtime.groq_vision.detect_objects.side_effect = detect
-    result = runtime.detect_objects()
+    result = runtime.detect_objects(speak_result=speak_result)
     assert result['status'] == 'error' and not result['objects']
     assert 'STALE_OBJECT' not in str(result)
+    runtime.tts.speak.assert_not_called()
 
 
 def test_late_greeting_from_previous_camera_session_is_discarded(vision):

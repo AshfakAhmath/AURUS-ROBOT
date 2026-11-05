@@ -132,7 +132,7 @@ class RobotRuntime:
             return "exploring"
         return "idle"
 
-    def detect_objects(self) -> dict:
+    def detect_objects(self, speak_result: bool = False) -> dict:
         result = {"status": "error", "objects": []}
         with self._lock:
             if self.demo_active:
@@ -157,7 +157,21 @@ class RobotRuntime:
                 message = f"I see {', '.join(objects)}."
             else:
                 message = "I couldn't identify any clear objects. Hold a prop near the center of the camera and try again."
-            return {"status": "ok", "objects": objects, "message": message}
+            response = {"status": "ok", "objects": objects, "message": message}
+            if speak_result:
+                names = objects[:3]
+                if names:
+                    spoken_names = names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]
+                    spoken = f"I see {', '.join(names)}, and more." if len(objects) > 3 else f"I see {spoken_names}."
+                else:
+                    spoken = "I couldn't identify a clear object. Please try again."
+                with self._lock:
+                    if not camera_session_current(snapshot, self.vision.get_snapshot()):
+                        return {**result, "message": "The camera changed during the scan. Please scan again."}
+                    response["speech_queued"] = bool(self.tts.healthy and self.tts.speak(
+                        spoken, valid_when=lambda: camera_session_current(snapshot, self.vision.get_snapshot()),
+                    ))
+            return response
         finally:
             self._object_scan.release()
 

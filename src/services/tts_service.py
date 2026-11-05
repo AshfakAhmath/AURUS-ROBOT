@@ -9,6 +9,7 @@ local first, fall back to browser on failure).
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 import logging
 import os
 from pathlib import Path
@@ -33,6 +34,17 @@ logger = logging.getLogger("aurus.tts")
 
 # Type alias for the callback that sends audio to the browser dashboard.
 AudioEmitCallback = Callable[[str, dict[str, Any]], None]
+
+
+class SpeechCancelled(Exception):
+    """A queued result is no longer current; skip it without voice fallback."""
+
+
+@dataclass
+class SpeechRequest:
+    text: str
+    on_complete: Callable[[], None] | None = None
+    valid_when: Callable[[], bool] | None = None
 
 
 @dataclass
@@ -64,6 +76,12 @@ class TTSService:
         self.piper_model = Path(piper_model) if piper_model else None
         self.playback_active = playback_active or threading.Event()
         self.local_playback_active = threading.Event()
+        self._caption_lock = threading.RLock()
+        self._utterance_text = ""
+        self._local_caption = ""
+        self._audio_captions = OrderedDict()
+        self._browser_captions = OrderedDict()
+        self._valid_when = None
         self.voice = voice or os.getenv("AURUS_TTS_VOICE", "en-US-GuyNeural")
         configured_volume = (
             volume_percent
@@ -88,7 +106,7 @@ class TTSService:
         # Tracks which output was actually used for the most recent utterance.
         self.active_output: str = "pi"
 
-        self._queue: queue.Queue[tuple[str, Callable[[], None] | None] | DemoSpeech | None] = queue.Queue(maxsize=8)
+        self._queue: queue.Queue[SpeechRequest | DemoSpeech | None] = queue.Queue(maxsize=8)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._piper_voice = None
@@ -108,6 +126,35 @@ class TTSService:
         """Install or replace the SocketIO emit callback (called from app.py)."""
         self._audio_emit = callback
 
+    @property
+    def speaking_text(self) -> str:
+        with self._caption_lock:
+            if self.local_playback_active.is_set():
+                return self._local_caption
+            return next(reversed(self._browser_captions.values()), "")
+
+    def track_browser_audio(self, sid, audio_id, playing):
+        """Only server-issued audio IDs can supply text to the face display."""
+        with self._caption_lock:
+            key = (sid, audio_id)
+            if not playing:
+                self._browser_captions.pop(key, None)
+                return
+            entry = self._audio_captions.get(audio_id)
+            if entry and (entry[1] is None or entry[1] == sid):
+                self._browser_captions[key] = entry[0]
+                self._browser_captions.move_to_end(key)
+
+    def clear_browser_audio(self, sid):
+        with self._caption_lock:
+            for key in list(self._browser_captions):
+                if key[0] == sid:
+                    del self._browser_captions[key]
+
+    def _check_playback_validity(self):
+        if self._stop.is_set() or (self._valid_when is not None and not self._valid_when()):
+            raise SpeechCancelled()
+
     def set_audio_output(self, mode: str) -> bool:
         """Switch audio output mode at runtime.  Returns True if accepted."""
         mode = mode.strip().lower()
@@ -124,6 +171,7 @@ class TTSService:
         """
         if self._audio_emit is None:
             return False
+        self._check_playback_validity()
         try:
             with open(audio_path, "rb") as fh:
                 audio_bytes = fh.read()
@@ -134,6 +182,7 @@ class TTSService:
             payload = {
                 "data": base64.b64encode(audio_bytes).decode("ascii"),
                 "format": mime_format,
+                "audio_id": uuid.uuid4().hex,
             }
             with self._demo_lock:
                 job = self._demo_job
@@ -142,6 +191,13 @@ class TTSService:
                         return False
                     job.browser_sent = True
                     payload.update(playback_id=job.playback_id, _recipient=job.recipient_sid)
+            with self._caption_lock:
+                self._audio_captions[payload["audio_id"]] = (self._utterance_text, payload.get("_recipient"))
+                while len(self._audio_captions) > 64:
+                    expired, _ = self._audio_captions.popitem(last=False)
+                    for key in list(self._browser_captions):
+                        if key[1] == expired:
+                            del self._browser_captions[key]
             self._audio_emit("play_audio", payload)
             self.active_output = "browser"
             logger.info("Audio streamed to browser (%s, %d bytes).", ext, len(audio_bytes))
@@ -234,6 +290,8 @@ class TTSService:
             output.writeframes((samples * gain).astype("<i2").tobytes())
 
     def _run_demo(self, job):
+        self._utterance_text = job.text
+        self._valid_when = None
         self._busy.set()
         self.playback_active.set()
         with self._demo_lock:
@@ -290,13 +348,18 @@ class TTSService:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self.playback_active.clear()
+        with self._caption_lock:
+            self._local_caption = ""
+            self._audio_captions.clear()
+            self._browser_captions.clear()
 
-    def speak(self, text: str, on_complete: Callable[[], None] | None = None) -> bool:
+    def speak(self, text: str, on_complete: Callable[[], None] | None = None,
+              valid_when: Callable[[], bool] | None = None) -> bool:
         clean = " ".join(text.strip().split())[:400]
         if not clean:
             return False
         try:
-            self._queue.put_nowait((clean, on_complete))
+            self._queue.put_nowait(SpeechRequest(clean, on_complete, valid_when))
             return True
         except queue.Full:
             self.error = "TTS queue full"
@@ -307,11 +370,16 @@ class TTSService:
     # ------------------------------------------------------------------
 
     def _play_locally(self, player: Callable[..., Any], *args, **kwargs) -> None:
+        self._check_playback_validity()
+        with self._caption_lock:
+            self._local_caption = self._utterance_text
         self.local_playback_active.set()
         try:
             player(*args, **kwargs)
         finally:
             self.local_playback_active.clear()
+            with self._caption_lock:
+                self._local_caption = ""
 
     def _play_wav(self, path: str) -> None:
         if shutil.which("aplay"):
@@ -442,6 +510,7 @@ class TTSService:
         * ``browser`` – stream to browser only.
         * ``auto``    – try local first; on failure stream to browser.
         """
+        self._check_playback_validity()
         if self.audio_output == "browser":
             if not self._emit_to_browser(audio_path):
                 logger.warning("Browser emit failed; attempting local playback.")
@@ -513,12 +582,17 @@ class TTSService:
             if isinstance(item, DemoSpeech):
                 self._run_demo(item)
                 continue
-            text, on_complete = item
+            text, on_complete = item.text, item.on_complete
+            self._utterance_text = text
+            self._valid_when = item.valid_when
             self._busy.set()
             self.playback_active.set()
             try:
+                self._check_playback_validity()
                 self._speak(text)
                 self.error = ""
+            except SpeechCancelled:
+                pass
             except Exception as exc:
                 self.error = str(exc)[:200]
                 print(f"[TTSService] {self.backend} playback failed: {self.error}")
@@ -533,11 +607,14 @@ class TTSService:
                         self._speak(text)
                         self.error = ""
                         print(f"[TTSService] Recovered using {self.backend}.")
+                    except SpeechCancelled:
+                        pass
                     except Exception as fallback_exc:
                         self.error = str(fallback_exc)[:200]
                         print(f"[TTSService] Fallback playback failed: {self.error}")
                         self.backend = "visual"
             finally:
+                self._valid_when = None
                 self.playback_active.clear()
                 self._busy.clear()
             if on_complete is not None:

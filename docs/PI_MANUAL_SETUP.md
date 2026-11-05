@@ -193,3 +193,26 @@ enrollment is disabled and “What can you see?” explains that the camera is o
 Toggle ON and wait for a fresh image. Recognize/enroll again, then check that
 text chat and the demo still work. Test Explore pause only in a suitable clear
 area under operator control; no physical movement test was run automatically.
+
+## 7. Object announcements and face transcripts
+
+After transferring the updated code, stop AURUS with Ctrl+C and restart with
+`.venv/bin/python run.py`. Refresh both the dashboard and `/face` display with
+Ctrl+Shift+R. No `.env` change or new package is required for these features.
+
+With the camera ON and ready, hold a prop in view and press **Detect Objects**.
+The dashboard lists the objects and AURUS speaks a brief result using the same
+voice as normal conversation. A voice or typed `Identify this object` request
+still speaks only once. If speech cannot be queued, the visual result remains
+available and the dashboard explains the speech issue.
+
+Open **Open Face Display** on the presentation monitor. The current spoken
+sentence appears below the face during Pi-speaker or PC-browser playback,
+including FIT Expo narration. Text clears when speech ends. Captions show the
+whole utterance, with the existing display polling delay, rather than word-by-word
+highlighting. Check a normal greeting, an object result and a demo line.
+
+Switching the camera OFF or restarting its session discards unfinished scans
+and button announcements still waiting for playback. An announcement already
+playing may finish. The face window remains a read-only display and does not
+take over dashboard controls.

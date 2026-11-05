@@ -849,7 +849,7 @@ def test_face_display_is_read_only_and_does_not_claim_operator_connection(expo_r
     assert b'href="/face"' in client.get("/").data
 
     state = client.get("/face/state")
-    assert state.json == {"expression": "idle"}
+    assert state.json == {"expression": "idle", "transcript": ""}
     assert state.cache_control.no_store
     assert client.post("/face/state").status_code == 405
     assert expo_runtime._demo_dashboard_sid is None
@@ -896,13 +896,17 @@ def mock_object_completion(runtime, content):
 
 
 def test_operator_scan_identifies_objects_from_the_current_frame(expo_runtime):
+    expo_runtime.tts.backend = "piper"
+    expo_runtime.tts.speak = Mock(return_value=True)
     create = mock_object_completion(expo_runtime, '{"objects":[" Red mug ","red mug","Notebook"]}')
     app, socketio, _, _ = create_app(expo_runtime)
     operator = socketio.test_client(app)
     other = socketio.test_client(app)
     other.get_received()
     result = operator.emit("detect_objects", callback=True)
-    assert result == {"status": "ok", "objects": ["Red mug", "Notebook"], "message": "I see Red mug, Notebook."}
+    assert result == {"status": "ok", "objects": ["Red mug", "Notebook"], "message": "I see Red mug, Notebook.", "speech_queued": True}
+    expo_runtime.tts.speak.assert_called_once()
+    assert expo_runtime.tts.speak.call_args.args[0] == "I see Red mug and Notebook."
     assert not other.get_received()
     request = create.call_args.kwargs
     assert request["model"] == "qwen/qwen3.8-27b"
@@ -947,10 +951,12 @@ def test_inflight_object_scan_blocks_a_second_scan_and_showcase(expo_runtime):
 
 
 def test_voice_object_command_announces_detected_objects(expo_runtime):
+    expo_runtime.tts.speak = Mock(return_value=True)
     mock_object_completion(expo_runtime, '{"objects":["water bottle"]}')
     result = expo_runtime.handle_text("Identify this object", source="voice")
     assert result["provider"] == "groq-vision"
     assert result["response"] == "I see water bottle."
+    expo_runtime.tts.speak.assert_called_once_with("I see water bottle.")
 
 
 if __name__ == "__main__":
