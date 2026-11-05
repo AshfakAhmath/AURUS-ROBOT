@@ -1,0 +1,44 @@
+{
+  "engine": "Windows System.Speech",
+  "voice": "Microsoft Zira Desktop",
+  "rate": -1,
+  "peak_dbfs": -1.0,
+  "clips": {
+    "introduction": {
+      "text": "Hello everyone! I'm AURUS, a robotic companion built by Team TechTitans. I'm a working prototype that brings together movement, vision, voice, and artificial intelligence. Welcome to the Faculty of Information Technology Expo!",
+      "sha256": "29802093d1c5f56fcbc20efb8454b33dbe7cf99881dc806c0e0804caf9aac34d",
+      "duration_s": 18.052
+    },
+    "movement": {
+      "text": "Let me introduce myself with a little movement. My ultrasonic sensors help me check for nearby obstacles.",
+      "sha256": "180b62f5e32dcd57ef0cf609453c48916f31cc4c5b555115cbdd43da2c8960af",
+      "duration_s": 8.188
+    },
+    "turn_left": {
+      "text": "A small turn to the left.",
+      "sha256": "26b2f0fbc9ba05c2472ce224700742a63cf066cd4ee6f8a0905d844faadd3a2c",
+      "duration_s": 2.469
+    },
+    "turn_right": {
+      "text": "And a small turn to the right. Hello, everyone!",
+      "sha256": "691f481a5d48e438db40de78ba32a12059823b8a5c8df7d5a9045fe81fc23b47",
+      "duration_s": 5.089
+    },
+    "capabilities": {
+      "text": "You can talk to me and ask questions using my Groq-powered artificial intelligence. I can use my camera to observe my surroundings, recognize people I have learned, and remember facts you choose to share.",
+      "sha256": "8ec9b487b5ec93108b772a7e9394b8014fbbf4f84c10a5ff244206474d8785a3",
+      "duration_s": 14.532
+    },
+    "closing": {
+      "text": "I'm still a prototype, so my team is continuing to improve me. Thank you for visiting, and enjoy the FIT Expo!",
+      "sha256": "c1bc9741b78018f9f56a2c26fec03b3ecadd6bf5d48ee93eeb7808e6c425da52",
+      "duration_s": 9.863
+    },
+    "blocked": {
+      "text": "There isn't enough clear space for my movement demonstration, so I'll continue my introduction from here.",
+      "sha256": "6e594d09b5603173416a15bd63967c22b8343904279f0dd8e5f819237eac87b5",
+      "duration_s": 7.188
+    }
+  },
+  "preview_duration_s": 61.943
+}

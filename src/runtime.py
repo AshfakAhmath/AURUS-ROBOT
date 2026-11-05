@@ -23,6 +23,7 @@ from src import config
 from src.services.vision_service import VisionService
 from src.services.mcp_agent_service import MCPAgentService
 from src.services.groq_vision_service import GroqVisionService
+from src.services.exhibition_demo import ExhibitionDemo
 
 
 class RobotRuntime:
@@ -100,6 +101,24 @@ class RobotRuntime:
         self._started = False
         self._lock = threading.RLock()
         self._last_manual_sequence = -1
+        self._demo_dashboard_sid = None
+        self.demo = ExhibitionDemo(self, self.project_root / "assets" / "fit_expo")
+        self.behavior.showcase_start = self.start_exhibition_demo
+        self.behavior.demo_active = lambda: self.demo_active
+
+    @property
+    def demo_active(self):
+        demo = getattr(self, "demo", None)
+        return bool(demo and demo.active)
+
+    def start_exhibition_demo(self, owner_sid=None):
+        with self._lock:
+            return self.demo.start(owner_sid or self._demo_dashboard_sid)
+
+    def stop_exhibition_demo(self, reason="Stopped by operator"):
+        demo = getattr(self, "demo", None)
+        if demo is not None:
+            demo.cancel(reason)
 
     def set_event_sink(self, callback: Callable[[str, dict], None]) -> None:
         self._event_sink = callback
@@ -137,6 +156,7 @@ class RobotRuntime:
         errors = []
         shutdown_steps = (
             ("emergency stop", lambda: self.arbiter.emergency_stop("runtime shutdown")),
+            ("exhibition demo", lambda: self.stop_exhibition_demo("Runtime shutdown")),
             ("behavior", self.behavior.stop),
             ("speech", self.speech.stop),
             ("vision", self.vision.stop),
@@ -163,8 +183,15 @@ class RobotRuntime:
             with self._lock:
                 self._last_manual_sequence = -1
         self.arbiter.set_dashboard_connected(connected)
+        if not connected:
+            self.stop_exhibition_demo("Dashboard disconnected")
 
     def set_mode(self, value: str) -> bool:
+        if self.demo_active:
+            if value.lower() == "idle":
+                self.stop_exhibition_demo()
+            else:
+                return False
         aliases = {
             "explore": RobotMode.EXPLORING,
             "exploring": RobotMode.EXPLORING,
@@ -185,12 +212,17 @@ class RobotRuntime:
         return accepted
 
     def set_audio_output(self, mode: str) -> bool:
+        if self.demo_active:
+            self.emit("command_error", {"message": "Stop the FIT Expo demo before changing the speaker output."})
+            return False
         accepted = self.tts.set_audio_output(mode)
         if accepted:
             self.emit("system_health", self.health())
         return accepted
 
     def manual_drive(self, vx: float, vy: float, omega: float, sequence: int) -> bool:
+        if self.demo_active:
+            return False
         with self._lock:
             if sequence <= self._last_manual_sequence:
                 return False
@@ -212,9 +244,10 @@ class RobotRuntime:
         return data
 
     def emergency_stop(self) -> None:
+        self.arbiter.emergency_stop()
+        self.stop_exhibition_demo("Emergency stop")
         behavior = getattr(self, "behavior", None)
         summary = behavior.finish_exploration(emit=False) if behavior is not None else None
-        self.arbiter.emergency_stop()
         self.repository.log_event("estop", "Emergency stop activated")
         if summary:
             self.emit("mission_summary", summary)
@@ -225,6 +258,8 @@ class RobotRuntime:
         self.repository.log_event("estop", "Emergency stop cleared")
 
     def start_enrollment(self, name: str):
+        if self.demo_active:
+            raise ValueError("Stop the FIT Expo demo before enrollment.")
         snapshot = self.vision.get_snapshot()
         if "sface" in snapshot.backend:
             status = self.identity.begin_enrollment(name)
@@ -236,6 +271,8 @@ class RobotRuntime:
         return status
 
     def remember_fact(self, text: str) -> tuple[bool, str]:
+        if self.demo_active:
+            return False, "Stop the FIT Expo demo before storing a fact."
         identity = self.vision.get_snapshot().identity
         if identity.status != "known" or identity.user_id is None:
             return False, "Please enroll or recognize a person before storing a memory."
@@ -243,6 +280,8 @@ class RobotRuntime:
         return True, f"I will remember that {text}."
 
     def start_listening(self) -> bool:
+        if self.demo_active:
+            return False
         if not self.speech.healthy:
             self.emit("conversation", {"source": "voice", "transcript": "", "response": "Microphone recognition is unavailable. Please use text input.", "provider": "local", "fallback_reason": self.speech.error})
             return False
@@ -262,7 +301,7 @@ class RobotRuntime:
 
     def _wake_detected(self, _keyword: str = "AURUS") -> None:
         """Acknowledge a local wake phrase, then open the command capture window."""
-        if not self.arbiter.set_mode(RobotMode.LISTENING):
+        if self.demo_active or not self.arbiter.set_mode(RobotMode.LISTENING):
             self.speech.cancel_wake()
             return
         response = "I'm listening."
@@ -292,7 +331,7 @@ class RobotRuntime:
 
     def browser_wake_detected(self) -> bool:
         """Acknowledge the browser wake phrase before arming its command window."""
-        if not self.arbiter.set_mode(RobotMode.LISTENING):
+        if self.demo_active or not self.arbiter.set_mode(RobotMode.LISTENING):
             return False
         response = "I'm listening."
         self.emit("conversation", {
@@ -344,6 +383,10 @@ class RobotRuntime:
         provider: str,
         fallback_reason: str = "",
     ) -> dict:
+        if self.demo_active:
+            # A cloud response/greeting already in flight must not enter the
+            # speech queue between the demo's prepared narration segments.
+            return {"status": "error", "response": "FIT Expo demo is running.", "source": source}
         self.tts.speak(response)
         payload = {
             "source": source,
@@ -373,11 +416,12 @@ class RobotRuntime:
             self.emergency_stop()
             return self._announce("Emergency stop activated and latched.", source, clean, "local")
         if (
-            lower in ("stop", "halt", "freeze")
+            lower in ("stop", "halt", "freeze", "stop demo", "stop showcase")
             or "stop exploring" in lower
             or "stop and summarize" in lower
             or "stop and summarise" in lower
         ):
+            self.stop_exhibition_demo()
             was_exploring = self.arbiter.mode == RobotMode.EXPLORING
             self.arbiter.halt("voice-stop")
             if not self.arbiter.estopped:
@@ -391,6 +435,11 @@ class RobotRuntime:
                 self.emit("mission_summary", summary)
                 return self._announce(summary["text"], source, clean, "local")
             return self._announce("Stopped safely.", source, clean, "local")
+
+        if self.demo_active:
+            message = "FIT Expo demo is running. Use Stop Demo or E-STOP to interrupt."
+            self.emit("command_error", {"message": message})
+            return {"status": "error", "message": message}
 
         if any(phrase in lower for phrase in (
             "what have you found", "mission status", "exploration status",
@@ -481,7 +530,9 @@ class RobotRuntime:
             return self._announce("Manual mode ready.", source, clean, "local")
         if any(phrase in lower for phrase in ("show me what you can do", "showcase", "dance")):
             started = self.behavior.start_showcase()
-            return self._announce("Beginning the mecanum showcase." if started else "A showcase is already running.", source, clean, "local")
+            if not started:
+                self.emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity and check the cached audio."})
+            return {"status": "ok" if started else "error", "message": "FIT Expo demo started" if started else "Demo unavailable"}
         if "status" in lower or "how are your systems" in lower:
             sensors = self.sensor_sampler.get_snapshot()
             clearance = sensors.navigation_front_min(self.arbiter.front_sensor_enabled)
@@ -510,6 +561,8 @@ class RobotRuntime:
         return self._announce("My cloud intelligence is currently offline.", source, clean, "local")
 
     def _handle_behavior_event(self, event: str, payload: dict) -> None:
+        if self.demo_active and event in ("greeting", "greeting_unknown", "behavior_notice", "mission_summary"):
+            return
         if event == "greeting":
             self._announce(f"Welcome back, {payload['name']}! I recognize you.", "vision", "", "local")
         elif event == "greeting_unknown":
@@ -584,5 +637,6 @@ class RobotRuntime:
             "vision": self.vision.get_snapshot().as_dict(),
             "enrollment": self.identity.get_enrollment().as_dict(),
             "mission": self.behavior.mission_snapshot(),
+            "demo": self.demo.snapshot(),
             "health": self.health(),
         }

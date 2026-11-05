@@ -197,6 +197,9 @@ def test_gpio_missing_echo_raises_instead_of_fabricating_400(monkeypatch):
     fake_gpio = SimpleNamespace(HIGH=1, LOW=0, output=Mock(), input=Mock(return_value=0))
     monkeypatch.setattr(module, "GPIO", fake_gpio)
     transducer = object.__new__(ProximitySensor)
+    transducer._ping_lock = threading.Lock()
+    transducer._last_ping_at = None
+    transducer._last_sensor_ping = {}
     with pytest.raises(TimeoutError, match="missing echo"):
         transducer._read_physical_sensor(4, 7)
 
@@ -373,20 +376,28 @@ def test_sensor_setting_rejects_gpio_and_nonboolean():
 
 def test_threaded_arbiter_cancels_active_mcp_burst():
     sensor, sampler, driver, arbiter, _, service = build()
-    def obstacle():
-        sensor.values["f"] = 17
-        sampler.sample_once()
-    timer = threading.Timer(0.04, obstacle)
+    # Inject only after output actually starts. A wall-clock timer can fire
+    # before movement or after initial data expires on a busy test machine.
+    drive = driver.drive
+    introduced = threading.Event()
+    def drive_then_obstacle(*vector):
+        drive(*vector)
+        if vector[0] > 0 and not introduced.is_set():
+            sensor.values["f"] = 17
+            sampler.sample_once()
+            introduced.set()
+    driver.drive = drive_then_obstacle
+    sampler.start()
     arbiter.start()
-    timer.start()
     try:
         result = json.loads(service._dispatch_tool("move_rover", {"direction": "forward", "duration": 1}))
+        assert introduced.is_set()
         assert result["status"] == "blocked" and result["obstacle_distance_cm"] == 17
         assert arbiter.mode == RobotMode.IDLE
         assert driver.commands[-1] == (0, 0, 0)
     finally:
-        timer.join()
         arbiter.stop()
+        sampler.stop()
 
 
 def test_failed_stop_is_retried_and_never_reported_as_completed():

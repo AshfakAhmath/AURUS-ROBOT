@@ -19,6 +19,9 @@ import subprocess
 import tempfile
 import threading
 import wave
+import time
+import uuid
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
@@ -27,6 +30,18 @@ logger = logging.getLogger("aurus.tts")
 
 # Type alias for the callback that sends audio to the browser dashboard.
 AudioEmitCallback = Callable[[str, dict[str, Any]], None]
+
+
+@dataclass
+class CachedPlayback:
+    path: Path
+    on_complete: Callable[[bool], None]
+    recipient_sid: str | None
+    cancelled: threading.Event
+    playback_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    finished: threading.Event = field(default_factory=threading.Event)
+    browser_sent: bool = False
+    success: bool = False
 
 
 class TTSService:
@@ -69,10 +84,13 @@ class TTSService:
         # Tracks which output was actually used for the most recent utterance.
         self.active_output: str = "pi"
 
-        self._queue: queue.Queue[tuple[str, Callable[[], None] | None] | None] = queue.Queue(maxsize=8)
+        self._queue: queue.Queue[tuple[str, Callable[[], None] | None] | CachedPlayback | None] = queue.Queue(maxsize=8)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._piper_voice = None
+        self._busy = threading.Event()
+        self._cached_lock = threading.Lock()
+        self._cached_job: CachedPlayback | None = None
         self.backend = self._select_backend()
         self.error = "" if self.backend != "visual" else "No local TTS executable available"
 
@@ -111,11 +129,21 @@ class TTSService:
                 "data": base64.b64encode(audio_bytes).decode("ascii"),
                 "format": mime_format,
             }
+            with self._cached_lock:
+                job = self._cached_job
+                if job is not None:
+                    if not job.recipient_sid:
+                        return False
+                    job.browser_sent = True
+                    payload.update(playback_id=job.playback_id, _recipient=job.recipient_sid)
             self._audio_emit("play_audio", payload)
             self.active_output = "browser"
             logger.info("Audio streamed to browser (%s, %d bytes).", ext, len(audio_bytes))
             return True
         except Exception as exc:
+            with self._cached_lock:
+                if self._cached_job is not None:
+                    self._cached_job.browser_sent = False
             logger.warning("Failed to stream audio to browser: %s", exc)
             return False
 
@@ -147,6 +175,64 @@ class TTSService:
     @property
     def healthy(self) -> bool:
         return self.backend != "visual"
+
+    @property
+    def busy(self) -> bool:
+        return self._busy.is_set() or not self._queue.empty()
+
+    def speak_cached(self, path, on_complete, recipient_sid, cancelled) -> bool:
+        """Replay prepared audio; no synthesis, amplification or network calls."""
+        job = CachedPlayback(Path(path), on_complete, recipient_sid, cancelled)
+        if not job.path.is_file() or self._stop.is_set():
+            return False
+        try:
+            self._queue.put_nowait(job)
+            return True
+        except queue.Full:
+            return False
+
+    def acknowledge_cached(self, playback_id, sid, success) -> bool:
+        with self._cached_lock:
+            job = self._cached_job
+            if (job is None or not job.browser_sent or job.playback_id != playback_id
+                    or job.recipient_sid != sid or job.finished.is_set() or job.cancelled.is_set()):
+                return False
+            job.success = success is True
+            job.finished.set()
+            return True
+
+    def _run_cached(self, job):
+        self._busy.set()
+        self.playback_active.set()
+        with self._cached_lock:
+            self._cached_job = job
+        success = False
+        try:
+            if job.cancelled.is_set():
+                return
+            self._play_or_stream(str(job.path))
+            if job.browser_sent:
+                deadline = time.monotonic() + 45.0
+                while not job.finished.wait(0.05):
+                    if job.cancelled.is_set() or self._stop.is_set():
+                        return
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Browser demo audio acknowledgement timed out")
+                success = job.success
+            else:
+                success = True
+            self.error = "" if success else "Demo audio playback failed"
+        except Exception as exc:
+            self.error = str(exc)[:200]
+        finally:
+            with self._cached_lock:
+                self._cached_job = None
+            self.playback_active.clear()
+            self._busy.clear()
+            try:
+                job.on_complete(success and not job.cancelled.is_set() and not self._stop.is_set())
+            except Exception:
+                logger.exception("Cached speech completion callback failed")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -382,7 +468,11 @@ class TTSService:
                 continue
             if item is None:
                 break
+            if isinstance(item, CachedPlayback):
+                self._run_cached(item)
+                continue
             text, on_complete = item
+            self._busy.set()
             self.playback_active.set()
             try:
                 self._speak(text)
@@ -407,6 +497,7 @@ class TTSService:
                         self.backend = "visual"
             finally:
                 self.playback_active.clear()
+                self._busy.clear()
             if on_complete is not None:
                 try:
                     on_complete()

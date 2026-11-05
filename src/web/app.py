@@ -28,7 +28,11 @@ def create_app(runtime):
     sensor_token = os.getenv("AURUS_SENSOR_OPERATOR_TOKEN", "")
     browser_speakers: set[str] = set()
 
-    runtime.set_event_sink(lambda event, payload: socketio.emit(event, payload))
+    def event_sink(event, data):
+        # Demo browser audio belongs to the operator who started the run.
+        recipient = data.get("_recipient")
+        socketio.emit(event, {key: value for key, value in data.items() if key != "_recipient"}, to=recipient)
+    runtime.set_event_sink(event_sink)
 
     def payload(data):
         return data if isinstance(data, dict) else {}
@@ -56,6 +60,7 @@ def create_app(runtime):
     def on_connect():
         with clients_lock:
             clients.add(request.sid)
+            runtime._demo_dashboard_sid = request.sid
             runtime.dashboard_connected(True)
         emit("system_health", runtime.health())
         emit("telemetry", runtime.telemetry())
@@ -70,6 +75,16 @@ def create_app(runtime):
             if speech is not None and not browser_speakers:
                 speech.browser_playback_active.clear()
             runtime.dashboard_connected(bool(clients))
+        demo = getattr(runtime, "demo", None)
+        if demo is not None:
+            demo.owner_disconnected(request.sid)
+        if getattr(runtime, "_demo_dashboard_sid", None) == request.sid:
+            runtime._demo_dashboard_sid = next(iter(clients), None)
+
+    @socketio.on("demo_audio_finished")
+    def demo_audio_finished(data):
+        data = payload(data)
+        runtime.tts.acknowledge_cached(data.get("playback_id"), request.sid, data.get("success") is True)
 
     @socketio.on("browser_audio_state")
     def browser_audio_state(data):
@@ -150,7 +165,8 @@ def create_app(runtime):
     def set_audio_output(data):
         mode = str(payload(data).get("mode", "auto"))
         if not runtime.set_audio_output(mode):
-            emit("command_error", {"message": f"Invalid audio output mode '{mode}'. Choose 'pi', 'browser', or 'auto'."})
+            message = "Stop the FIT Expo demo before changing speaker output." if getattr(runtime, "demo_active", False) else f"Invalid audio output mode '{mode}'. Choose 'pi', 'browser', or 'auto'."
+            emit("command_error", {"message": message})
         else:
             socketio.emit("system_health", runtime.health())
 
@@ -202,6 +218,9 @@ def create_app(runtime):
 
     @socketio.on("remember_fact")
     def remember_fact(data):
+        if getattr(runtime, "demo_active", False):
+            emit("command_error", {"message": "Stop the FIT Expo demo before storing a fact."})
+            return
         fact = str(payload(data).get("text", "")).strip()
         try:
             ok, message = runtime.remember_fact(fact)
@@ -211,8 +230,12 @@ def create_app(runtime):
 
     @socketio.on("perform_showcase")
     def perform_showcase(_data=None):
-        if not runtime.behavior.start_showcase():
-            emit("command_error", {"message": "Showcase rejected or already running."})
+        if not runtime.start_exhibition_demo(request.sid):
+            emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity, clear E-STOP if appropriate, and check cached audio."})
+
+    @socketio.on("stop_showcase")
+    def stop_showcase(_data=None):
+        runtime.stop_exhibition_demo()
 
     def telemetry_loop():
         last_enrollment = None

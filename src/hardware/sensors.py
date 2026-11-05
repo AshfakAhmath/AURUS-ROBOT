@@ -2,6 +2,7 @@ import time
 import math
 import random
 import statistics
+import threading
 from src import config
 
 # Try importing RPi.GPIO
@@ -16,10 +17,19 @@ class ProximitySensor:
     """Manages 5 HC-SR04 ultrasonic sensors: front-left, front, front-right, rear-left, rear-right.
     Falls back to raycasting simulation when RPi.GPIO is unavailable."""
 
+    MIN_SENSOR_CYCLE_S = 0.065  # Datasheet recommends >60 ms per transducer.
+    MIN_PING_GAP_S = 0.040  # Stagger different transducers; no rapid burst polling.
+    ECHO_IDLE_TIMEOUT_S = 0.005
+    ECHO_RISE_TIMEOUT_S = 0.020
+    ECHO_FALL_TIMEOUT_S = 0.030  # 4 m needs about 23.3 ms, beyond the old 20 ms.
+
     def __init__(self, motor_driver=None):
         self.is_simulation = IS_SIMULATION
         self.motor_driver = motor_driver
-        
+        self._ping_lock = threading.Lock()
+        self._last_ping_at = None
+        self._last_sensor_ping = {}
+
         # Virtual obstacles in the simulated environment: list of dicts: {"type": "circle", "x": cx, "y": cy, "r": radius}
         self.obstacles = [
             {"type": "circle", "x": 50.0, "y": 50.0, "r": 25.0},
@@ -63,41 +73,62 @@ class ProximitySensor:
                     raise exc
 
     def _read_physical_sensor(self, trig_pin, echo_pin):
-        """Read distance from a physical HC-SR04 sensor. Returns distance in cm."""
-        # Trigger high for 10us
-        GPIO.output(trig_pin, GPIO.HIGH)
-        time.sleep(0.00001)
-        GPIO.output(trig_pin, GPIO.LOW)
+        """Measure one complete new echo; busy/timeout signals are never clearance."""
+        with self._ping_lock:
+            now = time.monotonic()
+            due = now
+            if self._last_ping_at is not None:
+                due = max(due, self._last_ping_at + self.MIN_PING_GAP_S)
+            previous = self._last_sensor_ping.get((trig_pin, echo_pin))
+            if previous is not None:
+                due = max(due, previous + self.MIN_SENSOR_CYCLE_S)
+            if due > now:
+                time.sleep(due - now)
 
-        pulse_start = time.monotonic()
-        pulse_end = time.monotonic()
+            GPIO.output(trig_pin, GPIO.LOW)
+            time.sleep(0.000002)
+            deadline = time.monotonic() + self.ECHO_IDLE_TIMEOUT_S
+            while GPIO.input(echo_pin) == GPIO.HIGH:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("echo high before trigger (sensor busy or stuck)")
 
-        # Wait for Echo to go high (timeout after 0.02s)
-        timeout = time.monotonic() + 0.02
-        while GPIO.input(echo_pin) == 0:
+            # Only a LOW -> triggered HIGH -> LOW cycle is a new measurement.
+            triggered = time.monotonic()
+            self._last_ping_at = triggered
+            self._last_sensor_ping[(trig_pin, echo_pin)] = triggered
+            GPIO.output(trig_pin, GPIO.HIGH)
+            try:
+                time.sleep(0.00001)
+            finally:
+                GPIO.output(trig_pin, GPIO.LOW)
+
+            deadline = time.monotonic() + self.ECHO_RISE_TIMEOUT_S
+            while GPIO.input(echo_pin) == GPIO.LOW:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("missing echo (rise timeout)")
             pulse_start = time.monotonic()
-            if pulse_start > timeout:
-                raise TimeoutError("missing echo (rise timeout)")
-
-        # Wait for Echo to go low (timeout after 0.02s)
-        timeout = time.monotonic() + 0.02
-        while GPIO.input(echo_pin) == 1:
+            deadline = pulse_start + self.ECHO_FALL_TIMEOUT_S
+            while GPIO.input(echo_pin) == GPIO.HIGH:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("echo pulse did not finish (fall timeout)")
             pulse_end = time.monotonic()
-            if pulse_end > timeout:
-                raise TimeoutError("echo stuck high (fall timeout)")
+            distance = (pulse_end - pulse_start) * 17150
+            if not math.isfinite(distance) or not 0 < distance <= 400:
+                raise ValueError("echo pulse outside valid 0–400 cm measurement range")
+            return round(distance, 2)
 
-        pulse_duration = pulse_end - pulse_start
-        # Speed of sound is 34300 cm/s. Distance is speed * time / 2
-        distance = pulse_duration * 17150
-        return round(distance, 2)
+    def _read_physical_filtered(self, trig_pin, echo_pin, samples=1):
+        """One fresh ping per sampler pass; explicit multi-sample calls stay spaced.
 
-    def _read_physical_filtered(self, trig_pin, echo_pin, samples=3):
-        """P1 #6: Read a physical sensor with median-of-N filtering to reject noise spikes.
-        Takes N samples and returns the median, which is robust against single outliers."""
+        Three immediate pings made a single transient fail the whole old burst,
+        and spacing all 15 pings correctly would exceed the 0.3 s freshness bound.
+        The sampler continues monitoring repeated inconsistent readings.
+        """
+        if samples < 1:
+            raise ValueError("At least one sample is required")
         readings = []
         for _ in range(samples):
             readings.append(self._read_physical_sensor(trig_pin, echo_pin))
-            time.sleep(0.005)  # Small inter-sample delay (5ms)
         return round(statistics.median(readings), 2)
 
     def _raycast_simulation(self, angle_offset):
@@ -115,26 +146,26 @@ class ProximitySensor:
 
         state = self.motor_driver.get_simulation_state()
         rx, ry, rtheta = state["x"], state["y"], state["theta"]
-        
+
         # Rover center offset: assume sonar sensors are mounted 10cm from center
         sensor_dist = 10.0
         sensor_angle = rtheta + angle_offset
-        
+
         px = rx + sensor_dist * math.cos(sensor_angle)
         py = ry + sensor_dist * math.sin(sensor_angle)
-        
+
         dx = math.cos(sensor_angle)
         dy = math.sin(sensor_angle)
 
         # Distance to room boundaries ([-150, 150] cm)
         t_wall = float('inf')
-        
+
         # X walls (vertical at x = -150 and x = 150)
         if dx > 0:
             t_wall = min(t_wall, (150.0 - px) / dx)
         elif dx < 0:
             t_wall = min(t_wall, (-150.0 - px) / dx)
-            
+
         # Y walls (horizontal at y = -150 and y = 150)
         if dy > 0:
             t_wall = min(t_wall, (150.0 - py) / dy)
@@ -148,15 +179,15 @@ class ProximitySensor:
             vx = px - obs["x"]
             vy = py - obs["y"]
             r = obs["r"]
-            
+
             b = 2.0 * (vx * dx + vy * dy)
             c = vx * vx + vy * vy - r * r
-            
+
             discriminant = b * b - 4.0 * c
             if discriminant >= 0:
                 t1 = (-b - math.sqrt(discriminant)) / 2.0
                 t2 = (-b + math.sqrt(discriminant)) / 2.0
-                
+
                 # We need the smallest positive intersection distance
                 if t1 > 0:
                     t_obs = min(t_obs, t1)

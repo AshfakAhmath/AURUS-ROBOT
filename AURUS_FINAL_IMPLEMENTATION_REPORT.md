@@ -504,3 +504,180 @@ recommended or was performed.
 - [ ] Missing calibration/coverage and interrupted movement fail safely.
 - [ ] E-STOP latches in every mode, overrides commands and requires explicit clearing.
 - [ ] Known-good commit, backups and reviewed recovery commands are available.
+
+## M. FIT Expo Demo and Prepared Voice — 2026-11-05
+
+This follow-up implements the planned one-button demo with the revised FIT Expo
+wording. Its separate recovery baseline was a clean `main` checkout at
+`d5342da4dc17d4c09e90e2436ea55d67b97240d8`. That commit already contained the earlier
+implementation described above. This follow-up remains uncommitted.
+
+The introduction now says **Faculty of Information Technology Expo**, and the
+closing says **FIT Expo**. The sentence “Please ask them for a demonstration of
+my features” was removed. The selected Codex PLAN.md was also updated at the
+user's request; that file is outside this repository.
+
+### Prepared speech and replay
+
+Seven WAV clips were actually rendered using the already-installed **Microsoft
+Zira Desktop** English voice at rate -1. Each clip is mono, 16-bit PCM, normalized
+to -1 dBFS peak with no clipped samples. The full narration preview is **61.943
+seconds**, including short pauses. No voice package/model was installed and no
+network synthesis request was made. Rendering wrote audio files only; no speaker
+playback or robot hardware was operated.
+
+The complete cache is committed only when the operator chooses to stage/publish
+it: `assets/fit_expo/introduction.wav`, `movement.wav`, `turn_left.wav`,
+`turn_right.wav`, `capabilities.wav`, `closing.wav`, `blocked.wav`,
+`fit_expo_preview.wav`, `manifest.json`, and `README.md` (all in that directory).
+The cache must be deployed alongside the new code. The Pi needs its existing
+WAV player/audio route, not the Windows voice. Integrity checks reject missing,
+corrupt or stale recordings before the demo can start.
+
+**Start FIT Expo Demo** replays those clips without runtime TTS synthesis or
+Groq requests. The existing Pi/PC/Auto selector remains. During a run its route
+is fixed; stop, switch output, and replay to change speakers. Cached levels are
+not amplified again by the normal TTS gain. Actual room loudness still depends
+on the speaker/amplifier and needs an operator sound check.
+
+### Demonstration behavior and controls
+
+- Existing showcase entry points now use the FIT Expo demo; the old strafe and
+  diagonal choreography was removed. Other ordinary manual controls are retained.
+- Straight movement pulses are 0.20 seconds each at magnitude 0.20; rotation
+  pulses are 0.15 seconds each at magnitude 0.20. These are time commands, not
+  measured travel distances/angles or guarantees of slow physical motion.
+- All demo requests have zero lateral velocity and go through MotionArbiter,
+  with priority 40 and a 0.15-second deadman refresh. Existing thresholds and
+  GPIO assignments are unchanged. Additional demo clearance is at least 60 cm,
+  or 75 cm for degraded front-center coverage, respecting larger existing limits.
+- Any blocked gesture, insufficient coverage or arbiter cancellation cancels all
+  later gestures. One cached explanation plays; the remaining introduction
+  finishes stationary. Disabled F therefore prevents rotation without being
+  silently re-enabled. There is no retry/rerouting or automatic movement resume.
+- Pi narration waits for local playback. PC narration is delivered only to the
+  initiating dashboard and waits for an utterance-specific success/error ack.
+  Wrong-client, duplicate and stale acknowledgements are rejected. Each speech
+  step has a 45-second timeout; unrecoverable audio failure ends the demo.
+- Stop Demo, E-STOP, initiating-dashboard disconnection and shutdown cancel the
+  sequence. Browser demo audio is stopped; an active short Pi utterance may
+  finish. E-STOP remains latched. Completion leaves the robot idle/stopped.
+- Concurrent agent/manual/listening requests and automatic greetings are gated
+  during the demo. Late conversation responses do not enter its speech queue.
+  Camera/face display and telemetry continue. Live demo stage/reason is visible.
+
+Additional or modified files in this follow-up:
+
+| File | Purpose |
+| --- | --- |
+| `src/services/demo_script.py` | Reviewed script and cache/hash/PCM validation |
+| `src/services/exhibition_demo.py` | Cancellable narration/gesture coordinator |
+| `scripts/prepare_demo_audio.py` | Offline file rendering and peak normalization on Windows |
+| `src/services/tts_service.py` | Backward-compatible cached jobs, route handling and browser acknowledgements |
+| `src/runtime.py` | Start/stop, activity guards, telemetry and immediate E-STOP ordering |
+| `src/services/behavior_controller.py` | Delegate showcase to demo; remove old choreography; suppress demo-time greetings |
+| `src/services/mcp_agent_service.py` | Busy state and rejection of new agent execution during demo |
+| `src/web/app.py` | Start/stop/ack events, targeted audio and disconnect cleanup |
+| `src/web/static/js/evaluation.js` | Button/status, browser ack, cancellation and recognition suppression |
+| `src/web/templates/index.html` | FIT Expo button/status text |
+| `pytest.ini` | Discover demo tests |
+| `tests/test_exhibition_demo.py` | 21 fake-hardware/audio and cache validation cases |
+| `tests/test_final_safety.py` | Trigger the threaded obstacle test after actual fake drive output, avoiding wall-clock timer races |
+| `assets/fit_expo/` | The ten audio/manifest/documentation assets listed above |
+| `AURUS_FINAL_IMPLEMENTATION_REPORT.md` | This follow-up record |
+
+### Actual follow-up validation
+
+- `python scripts/prepare_demo_audio.py`: first sandbox attempt failed because
+  its temporary files were inaccessible; approved-access rerun rendered seven
+  clips and a 61.943-second preview successfully, without playback.
+- `python -m pytest -q tests/test_exhibition_demo.py`: **21 passed**. Repeated
+  after the final-control-cycle cancellation fix: **21 passed**.
+- Initial full integration check: **134 passed, 2 skipped**, before demo tests
+  were added to discovery.
+- Expanded full runs identified a final-pulse cancellation edge case and then a
+  scheduling-sensitive existing timer-based test. The first was fixed in demo
+  cancellation handling; the second now injects its obstacle only after fake
+  movement starts and keeps sampling active. Safety assertions were retained.
+- Final `python -m pytest -q -rs`: **155 passed, 0 failed, 2 skipped**, 14.23 seconds.
+  Skips remain the existing unavailable-OpenCV checks.
+- `node --check src/web/static/js/evaluation.js` and
+  `python -m compileall -q src scripts/prepare_demo_audio.py tests`: passed.
+  Prepared text, WAV integrity, durations, hashes, levels and no sample clipping
+  were also checked programmatically. Final diff whitespace checks were performed.
+
+Before FIT Expo, an operator must listen to the preview, check the actual speaker
+level and PC fallback, then rehearse the brief straight/turn gestures on the
+actual floor. Low normalized speed does not bypass the driver's high PWM floor;
+verify tire security before allowing turns. Physical movement, stop latency,
+acoustic feedback and real browser/device playback remain unverified by mocks.
+No Pi deployment, service restart, real motor movement, Git commit or push was
+performed in this follow-up.
+
+## N. Ultrasonic Echo Timing Correction — 2026-11-05
+
+The operator reported FL and F showing `echo stuck high (fall timeout)` even
+while stationary, with FR/rear readings healthy. This is missing valid front
+coverage, not evidence that a large valid distance is an obstacle. An actual
+electrical/module fault cannot be confirmed or excluded from that screenshot.
+The existing motor restrictions remain fail-closed.
+
+Inspection found that the physical driver still attempted three measurements
+per sensor separated by only 5 ms, triggered without first checking Echo idle,
+and allowed just 20 ms for the falling edge. The
+[HC-SR04 datasheet](https://cdn.sparkfun.com/datasheets/Sensors/Proximity/HCSR04.pdf)
+recommends measurement cycles longer than 60 ms and specifies a 4 m range.
+At the existing speed-of-sound conversion, a 4 m return takes approximately
+23.3 ms, exceeding that old fall timeout.
+
+Changes in `src/hardware/sensors.py`:
+
+- Serialize physical reads and enforce at least 65 ms between triggers of the
+  same transducer. Stagger different transducers by at least 40 ms as a
+  conservative software default; actual cross-talk still requires Pi verification.
+- Require Echo to become LOW before triggering, with a bounded 5 ms idle wait.
+  A signal already HIGH is reported as `echo high before trigger (sensor busy or stuck)`;
+  the driver does not retrigger or interpret an old HIGH as a new measurement.
+- Capture a new rising/falling cycle, retain the bounded 20 ms rise wait, and
+  allow up to 30 ms for a falling edge. Completed out-of-range/nonfinite/zero
+  pulses remain invalid. Timeouts still become errors, never 400 cm clearance.
+- Use one fresh physical ping per sensor per sampler pass instead of the rapid
+  three-ping burst. Explicit multi-sample/median calls remain available and
+  respect the 65 ms spacing. Existing repeated-inconsistency diagnostics remain.
+
+Five healthy sensors are consequently refreshed at approximately 5 Hz rather
+than promising the sampler's nominal 7 Hz target. The synthetic 390 cm
+five-sensor round remains below the unchanged 0.3-second freshness limit.
+Real Linux timing, mount reflections and sensor response require verification.
+No GPIO assignment, motor threshold, E-STOP, freshness bound, invalid-reading
+restriction or automatic-resume behavior was weakened. No sensor was silently
+disabled. The previous FIT Expo demo changes and other uncommitted work were
+preserved.
+
+`tests/test_ultrasonic_timing.py` adds 15 synthetic-clock/GPIO cases covering
+fresh echoes through 390 cm, busy/high input before triggering, missing/stuck
+signals, completed out-of-range pulses, per-channel spacing, five-sensor timing,
+recovery, directional restrictions and no automatic resume. The existing
+private-driver test in `tests/test_final_safety.py` now initializes its fake
+timing state; `pytest.ini` includes the new test file. No physical GPIO test ran.
+
+Actual commands/results:
+
+- `python -m pytest -q tests/test_ultrasonic_timing.py tests/test_final_safety.py -k 'timing or gpio_missing or health_fault or stale'`:
+  **23 passed, 39 deselected**.
+- `python -m pytest -q -rs`: **170 passed, 0 failed, 2 skipped**, 12.18 seconds.
+  The skips remain the two unavailable-OpenCV checks.
+- `python -m compileall -q src/hardware/sensors.py tests/test_ultrasonic_timing.py`:
+  passed. Diff whitespace checks were performed before delivery.
+
+After a deliberate code update on the Pi, keep the robot stopped and inspect
+FL/F status first. Fresh valid measurements should restore Healthy status;
+movement still requires a fresh user command after cancellation. Persistent
+`high before trigger` while stationary requires an operator to inspect the
+module, common ground, connectors and echo voltage-divider wiring with power
+off. A genuinely held-HIGH line is not safely repairable by fabricating distance
+or bypassing coverage checks. Do not run the existing trigger-only voltage test
+beside the running application; it is not part of this patch's validation.
+
+These changes are local and uncommitted. No Pi service was restarted, no update
+was deployed, and no real sensor or motor was operated.

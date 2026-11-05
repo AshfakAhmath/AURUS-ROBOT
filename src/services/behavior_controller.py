@@ -34,6 +34,8 @@ class BehaviorController:
         self._explore_turn_direction = 1.0
         self._thread: threading.Thread | None = None
         self._showcase_thread: threading.Thread | None = None
+        self.showcase_start = None
+        self.demo_active = lambda: False
         self._lost_since: float | None = None
         self._last_greeted: dict[int, float] = {}
         self._mission_lock = threading.RLock()
@@ -171,16 +173,11 @@ class BehaviorController:
         self.arbiter.halt("behavior-shutdown")
 
     def start_showcase(self) -> bool:
-        if self._showcase_thread and self._showcase_thread.is_alive():
-            return False
-        if not self.arbiter.set_mode(RobotMode.PERFORMING):
-            return False
-        self._showcase_thread = threading.Thread(target=self._showcase, name="showcase-routine", daemon=True)
-        self._showcase_thread.start()
-        return True
+        # Retain the existing entry point, but never run the old strafe routine.
+        return bool(self.showcase_start and self.showcase_start())
 
     def _emit_greeting_if_needed(self, vision) -> None:
-        if not vision.faces:
+        if self.demo_active() or not vision.faces:
             return
 
         now = time.monotonic()
@@ -336,34 +333,6 @@ class BehaviorController:
                     )
         finally:
             self._observation_lock.release()
-
-    def _showcase(self) -> None:
-        self.event_callback("behavior_notice", {"text": "Showcase routine engaged. Observe the mecanum choreography!"})
-        sequence = [
-            (0.0, 0.85, 0.0, 0.55),
-            (0.0, -0.85, 0.0, 0.55),
-            (0.0, 0.0, 0.80, 0.75),
-            (0.0, 0.0, -0.80, 0.75),
-            (0.70, 0.70, 0.0, 0.45),
-            (-0.70, -0.70, 0.0, 0.45),
-        ]
-        try:
-            for vx, vy, omega, duration in sequence:
-                if self._stop.is_set() or self.arbiter.estopped or self.arbiter.mode != RobotMode.PERFORMING:
-                    break
-                end = time.monotonic() + duration
-                while time.monotonic() < end and not self._stop.is_set():
-                    if self.arbiter.estopped or self.arbiter.mode != RobotMode.PERFORMING:
-                        return
-                    self.arbiter.command("showcase", vx, vy, omega, ttl=0.15, priority=40)
-                    time.sleep(0.08)
-                self.arbiter.halt("showcase-step")
-                time.sleep(0.12)
-        finally:
-            self.arbiter.halt("showcase-complete")
-            if not self.arbiter.estopped and self.arbiter.mode == RobotMode.PERFORMING:
-                self.arbiter.set_mode(RobotMode.IDLE)
-                self.event_callback("behavior_notice", {"text": "Showcase complete. All motion stopped."})
 
     def _run(self) -> None:
         while not self._stop.wait(0.1):

@@ -203,6 +203,10 @@ class MCPAgentService:
     def ready(self) -> bool:
         return self._client is not None
 
+    @property
+    def busy(self) -> bool:
+        return self._execution_lock.locked()
+
     def execute_command(self, user_command: str) -> dict:
         if not self._execution_lock.acquire(blocking=False):
             msg = "The MCP Agent is already executing a command. Stop it or wait for it to finish."
@@ -218,6 +222,8 @@ class MCPAgentService:
             )
             return {"status": "error", "message": msg}
         try:
+            if getattr(self.runtime, "demo_active", False):
+                return {"status": "error", "message": "Stop the FIT Expo demo before running the MCP agent."}
             return self._execute_command(user_command)
         finally:
             self._execution_lock.release()

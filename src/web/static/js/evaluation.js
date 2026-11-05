@@ -7,6 +7,8 @@ let browserAudioPlaying = false;
 let browserAudioCount = 0;
 let sensorControlAuthorized = false;
 let browserMicActive = false;
+let demoActive = false;
+const demoAudio = new Set();
 
 const $ = (id) => document.getElementById(id);
 const fmtDistance = (value) => value != null && Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)} cm` : 'N/A';
@@ -16,6 +18,7 @@ socket.on('connect', () => {
   $('connection').className = 'pill good';
 });
 socket.on('disconnect', () => {
+  stopDemoAudio();
   sensorControlAuthorized = false;
   document.querySelectorAll('[data-sensor]').forEach(input => { input.disabled = true; });
   $('sensor-defaults').disabled = true;
@@ -31,6 +34,18 @@ socket.on('conversation', renderConversation);
 socket.on('telemetry', renderTelemetry);
 socket.on('mission_update', renderMission);
 socket.on('play_audio', handleBrowserAudio);
+socket.on('demo_status', renderDemo);
+socket.on('demo_stop_audio', stopDemoAudio);
+function stopDemoAudio() {
+  demoAudio.forEach(audio => { audio.pause(); audio.dispatchEvent(new Event('error')); });
+}
+
+function renderDemo(data = {}) {
+  demoActive = Boolean(data.active);
+  $('showcase').textContent = demoActive ? 'Stop Demo' : 'Start FIT Expo Demo';
+  $('demo-status').textContent = `${data.stage || 'Ready'}${data.active && !data.motion_enabled ? ' · Speech only' : ''}${data.reason ? ' · ' + data.reason : ''}`;
+  document.querySelectorAll('[data-audio-mode]').forEach(button => { button.disabled = demoActive; });
+}
 socket.on('sensor_configuration', renderSensorControl);
 socket.on('sensor_control_authorized', ({authorized}) => {
   sensorControlAuthorized = Boolean(authorized);
@@ -53,6 +68,7 @@ function renderSensorControl(sensors) {
 let missionDiscoverySignature = '';
 
 function renderTelemetry(data) {
+  renderDemo(data.demo);
   $('mode').textContent = data.mode;
   document.querySelectorAll('[data-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.mode === data.mode));
   latestSensors = data.sensors;
@@ -92,27 +108,32 @@ function unlockAudioContext() {
 window.addEventListener('click', unlockAudioContext, { once: true });
 window.addEventListener('keydown', unlockAudioContext, { once: true });
 
-function handleBrowserAudio({data, format}) {
+function handleBrowserAudio({data, format, playback_id}) {
   if (!data) return;
   let finishAudio = () => {};
   try {
     const mime = format === 'wav' ? 'audio/wav' : 'audio/mpeg';
     const audio = new Audio(`data:${mime};base64,${data}`);
+    if (playback_id) demoAudio.add(audio);
     robotSpeaking = true;
     browserAudioCount += 1;
     browserAudioPlaying = true;
     socket.emit('browser_audio_state', {playing: true});
     let finished = false;
-    finishAudio = () => {
+    finishAudio = (success = false) => {
       if (finished) return;
       finished = true;
       browserAudioCount = Math.max(0, browserAudioCount - 1);
       browserAudioPlaying = browserAudioCount > 0;
       robotSpeaking = browserAudioPlaying;
       socket.emit('browser_audio_state', {playing: browserAudioPlaying});
+      if (playback_id) {
+        demoAudio.delete(audio);
+        socket.emit('demo_audio_finished', {playback_id, success});
+      }
     };
-    audio.onended = finishAudio;
-    audio.onerror = finishAudio;
+    audio.onended = () => finishAudio(true);
+    audio.onerror = () => finishAudio(false);
     const playPromise = audio.play();
     if (playPromise !== undefined) {
       playPromise.catch(err => {
@@ -386,7 +407,7 @@ function initBrowserMic() {
     for (let i = event.resultIndex; i < event.results.length; i++) {
       if (event.results[i].isFinal) {
         const transcript = event.results[i][0].transcript.toLowerCase().trim();
-        if (!transcript || robotSpeaking) continue;
+        if (!transcript || robotSpeaking || demoActive) continue;
 
         if (Date.now() < wakeArmedUntil) {
           wakeArmedUntil = 0;
@@ -453,7 +474,10 @@ $('message').addEventListener('keydown', e => { if (e.key === 'Enter') sendText(
 $('listen').onclick = () => socket.emit('start_listening', {});
 $('estop').onclick = () => socket.emit('stop', {});
 $('clear-estop').onclick = () => socket.emit('clear_estop', {});
-$('showcase').onclick = () => socket.emit('perform_showcase', {});
+$('showcase').onclick = () => {
+  endDrive();
+  socket.emit(demoActive ? 'stop_showcase' : 'perform_showcase', {});
+};
 $('enroll').onclick = () => socket.emit('enroll_person', {name: $('enroll-name').value.trim()});
 $('remember').onclick = () => socket.emit('remember_fact', {text: $('fact').value.trim()});
 document.querySelectorAll('[data-mode]').forEach(btn => btn.onclick = () => socket.emit('set_mode', {mode: btn.dataset.mode}));
