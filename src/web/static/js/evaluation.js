@@ -9,15 +9,72 @@ let sensorControlAuthorized = false;
 let browserMicActive = false;
 let demoActive = false;
 const demoAudio = new Set();
+let cameraConnected = false;
+let cameraControl = null;
+let cameraRequested = null;
+let cameraFeedGeneration = null;
 
 const $ = (id) => document.getElementById(id);
 const fmtDistance = (value) => value != null && Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)} cm` : 'N/A';
 
+function renderCamera(data = {}) {
+  if (cameraControl && data.generation != null && cameraControl.generation != null && data.generation < cameraControl.generation) data = {};
+  cameraControl = {...(cameraControl || {}), ...data};
+  const enabled = cameraControl.enabled !== false;
+  const state = cameraControl.state || 'starting';
+  const known = typeof cameraControl.enabled === 'boolean';
+  const ready = cameraConnected && enabled && state === 'on';
+  if (cameraRequested === cameraControl.enabled) cameraRequested = null;
+  const button = $('camera-toggle');
+  button.disabled = !cameraConnected || !known || cameraRequested !== null;
+  button.textContent = !known ? 'Camera loading' : cameraRequested !== null ? 'Updating camera...' : (enabled ? 'Turn camera off' : 'Turn camera on');
+  button.setAttribute('aria-pressed', String(enabled));
+  const image = $('camera');
+  image.hidden = !ready;
+  $('camera-overlay').hidden = ready;
+  if (ready) {
+    if (!image.getAttribute('src') || cameraFeedGeneration !== cameraControl.generation) {
+      image.src = `${image.dataset.streamUrl}?session=${cameraControl.generation || 0}`;
+      cameraFeedGeneration = cameraControl.generation;
+    }
+  } else {
+    image.removeAttribute('src');
+    cameraFeedGeneration = null;
+    const labels = !cameraConnected ? ['Dashboard disconnected', 'Reconnect to control the camera.']
+      : state === 'error' ? ['Camera unavailable', cameraControl.error || 'Check the camera connection.']
+      : !enabled ? [state === 'stopping' ? 'Stopping camera...' : 'Camera switched off', 'Video, face detection and recognition are paused.']
+      : ['Camera starting...', 'Waiting for a fresh camera image.'];
+    $('camera-state').textContent = labels[0];
+    $('camera-help').textContent = labels[1];
+    $('identity-status').textContent = 'NO FACE';
+    $('identity-name').textContent = 'No target';
+    $('identity-confidence').textContent = 'Confidence 0.00';
+  }
+  const feedLabel = ready ? 'Live feed' : state === 'error' ? 'Camera error' : state === 'stopping' ? 'Stopping' : !enabled ? 'Camera off' : 'Waiting';
+  $('camera-feed-status').innerHTML = `<i></i> ${feedLabel}`;
+  $('camera-feed-status').classList.toggle('inactive', !ready);
+  $('enroll').disabled = !ready || demoActive;
+  $('enroll-name').disabled = !ready || demoActive;
+  $('remember').disabled = !ready || demoActive;
+  document.querySelectorAll('[data-mode="exploring"]').forEach(button => { button.disabled = !known || !enabled; });
+  if (!enabled) $('vision-backend').textContent = 'Disabled';
+}
+
 socket.on('connect', () => {
+  cameraConnected = true;
+  // A restarted robot can reset its generation counter. Trust only fresh
+  // server state after reconnecting, rather than retaining the previous epoch.
+  cameraControl = null;
+  cameraRequested = null;
+  cameraFeedGeneration = null;
+  renderCamera({state: 'starting'});
   $('connection').innerHTML = '<i></i> Connected';
   $('connection').className = 'pill good';
 });
 socket.on('disconnect', () => {
+  cameraConnected = false;
+  cameraRequested = null;
+  renderCamera();
   stopDemoAudio();
   sensorControlAuthorized = false;
   document.querySelectorAll('[data-sensor]').forEach(input => { input.disabled = true; });
@@ -26,7 +83,12 @@ socket.on('disconnect', () => {
   $('connection').innerHTML = '<i></i> Offline';
   $('connection').className = 'pill bad';
 });
-socket.on('command_error', ({message}) => { $('error').textContent = message; });
+socket.on('command_error', ({message}) => {
+  $('error').textContent = message;
+  cameraRequested = null;
+  if (cameraControl) renderCamera();
+});
+socket.on('camera_configuration', renderCamera);
 socket.on('system_error', ({component, error}) => { $('error').textContent = `${component}: ${error}`; });
 socket.on('system_health', renderHealth);
 socket.on('enrollment_progress', renderEnrollment);
@@ -45,6 +107,7 @@ function renderDemo(data = {}) {
   $('showcase').textContent = demoActive ? 'Stop Demo' : 'Start FIT Expo Demo';
   $('demo-status').textContent = `${data.stage || 'Ready'}${data.active && !data.motion_enabled ? ' · Speech only' : ''}${data.reason ? ' · ' + data.reason : ''}`;
   document.querySelectorAll('[data-audio-mode]').forEach(button => { button.disabled = demoActive; });
+  if (cameraControl) renderCamera();
 }
 socket.on('sensor_configuration', renderSensorControl);
 socket.on('sensor_control_authorized', ({authorized}) => {
@@ -86,13 +149,18 @@ function renderTelemetry(data) {
   $('motion-vector').textContent = `Final · ${decision.final.vx.toFixed(2)} / ${decision.final.vy.toFixed(2)} / ${decision.final.omega.toFixed(2)}`;
   const identity = data.vision.identity;
   const faceCount = Number(data.vision.face_count || 0);
-  $('identity-status').textContent = faceCount ? identity.status.toUpperCase() : 'NO FACE';
-  $('identity-name').textContent = faceCount ? (identity.name || 'Not enrolled') : 'No target';
-  $('identity-confidence').textContent = `Confidence ${Number(identity.confidence || 0).toFixed(2)}`;
-  $('vision-backend').textContent = `${data.vision.backend} · ${faceCount} face${faceCount === 1 ? '' : 's'}`;
+  if (!cameraControl || (data.vision.generation || 0) >= (cameraControl.generation || 0)) {
+    $('identity-status').textContent = faceCount ? identity.status.toUpperCase() : 'NO FACE';
+    $('identity-name').textContent = faceCount ? (identity.name || 'Not enrolled') : 'No target';
+    $('identity-confidence').textContent = `Confidence ${Number(identity.confidence || 0).toFixed(2)}`;
+    $('vision-backend').textContent = `${data.vision.backend} · ${faceCount} face${faceCount === 1 ? '' : 's'}`;
+  }
   renderEnrollment(data.enrollment);
   renderMission(data.mission);
   renderHealth(data.health);
+  renderCamera({enabled: data.health.camera_enabled ?? (data.vision.enabled !== false), generation: data.health.camera_generation ?? data.vision.generation,
+    state: data.health.camera_state || (data.vision.healthy ? 'on' : data.vision.enabled === false ? 'off' : 'starting'),
+    error: data.vision.error});
   drawRadar(data.sensors);
 }
 
@@ -164,6 +232,9 @@ function updateAudioOutputUI(configuredMode, activeOutput) {
 }
 
 function renderHealth(health) {
+  if (typeof health.camera_enabled === 'boolean') {
+    renderCamera({enabled: health.camera_enabled, state: health.camera_state, generation: health.camera_generation, error: health.camera_error});
+  }
   const keys = ['runtime','motors','sensors','camera','microphone','tts','llm','groq_vision','database','mcp_agent','wake_phrase','estop'];
   $('health').innerHTML = keys.map(key => {
     const browserVoice = browserMicActive && (key === 'microphone' || key === 'wake_phrase');
@@ -171,6 +242,7 @@ function renderHealth(health) {
     const expectedBad = key === 'estop';
     const good = expectedBad ? !value : value;
     let label = value ? 'READY' : 'OFF';
+    const disabledCamera = key === 'camera' && (cameraControl ? cameraControl.enabled : health.camera_enabled) === false;
     if (key === 'tts') label = health.tts_backend || label;
     if (key === 'camera') label = health.vision_backend || label;
     if (key === 'microphone') label = health.stt_backend || label;
@@ -178,7 +250,8 @@ function renderHealth(health) {
     if (key === 'llm') label = health.llm_backend || label;
     if (key === 'groq_vision') label = health.groq_vision_model || label;
     if (browserVoice) label = 'browser';
-    return `<div class="health-item ${good ? '' : 'bad'}"><span class="health-name"><i></i>${key.replaceAll('_',' ')}</span><strong>${label}</strong></div>`;
+    if (disabledCamera) label = 'DISABLED';
+    return `<div class="health-item ${disabledCamera ? 'disabled' : good ? '' : 'bad'}"><span class="health-name"><i></i>${key.replaceAll('_',' ')}</span><strong>${label}</strong></div>`;
   }).join('');
   if (health && health.tts_audio_output) {
     updateAudioOutputUI(health.tts_audio_output, health.tts_active_output);
@@ -543,6 +616,13 @@ function endDrive() {
   driveTimer = null;
   emitDrive([0, 0, 0]);
 }
+
+$('camera-toggle').addEventListener('click', () => {
+  if (!cameraConnected || !cameraControl || cameraRequested !== null) return;
+  cameraRequested = !cameraControl.enabled;
+  renderCamera();
+  socket.emit('set_camera_enabled', {enabled: cameraRequested});
+});
 
 document.querySelectorAll('[data-drive]').forEach(btn => {
   btn.addEventListener('pointerdown', e => { e.preventDefault(); beginDrive(btn.dataset.drive); });

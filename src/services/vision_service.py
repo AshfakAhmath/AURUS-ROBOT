@@ -31,6 +31,7 @@ class VisionService:
         process_size: tuple[int, int] = (320, 256),
         rate_hz: float = 10.0,
         detection_threshold: float | None = None,
+        enabled: bool = True,
     ):
         self.identity_service = identity_service
         self.model_dir = Path(model_dir)
@@ -45,6 +46,12 @@ class VisionService:
         self.detection_threshold = max(0.3, min(0.95, detection_threshold))
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._released = threading.Event()
+        self._released.set()
+        self._enabled = bool(enabled)
+        self._generation = 0
+        self._release_error = ""
         self._thread: threading.Thread | None = None
         self._camera = None
         self._camera_kind = "none"
@@ -52,23 +59,78 @@ class VisionService:
         self._detector = None
         self._recognizer = None
         self._haar = None
-        self._snapshot = VisionSnapshot()
+        self._snapshot = VisionSnapshot() if enabled else VisionSnapshot(
+            enabled=False, backend="disabled", error="Camera switched off",
+        )
         self._jpeg: bytes | None = None
         self._backend = "unavailable"
         self._dnn_fallback_reported = False
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="vision-service", daemon=True)
-        self._thread.start()
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._run, name="vision-service", daemon=True)
+            self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
+        with self._lock:
+            self._generation += 1
+            self._invalidate("Camera stopped")
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
-        self._close_camera()
+        # The worker alone closes hardware, including after a blocked read.
+        # Never close concurrently or start another owner while it is alive.
+
+    @property
+    def enabled(self) -> bool:
+        with self._lock:
+            return self._enabled
+
+    def control_state(self) -> dict:
+        with self._lock:
+            if self._release_error:
+                state = "error"
+            elif not self._enabled:
+                state = "off" if self._released.is_set() else "stopping"
+            elif self._stop.is_set():
+                state = "stopped" if self._released.is_set() else "stopping"
+            elif self._snapshot.healthy:
+                state = "on"
+            else:
+                state = "starting" if self._snapshot.error in ("not started", "Camera starting; waiting for a fresh image") else "error"
+            return {"enabled": self._enabled, "state": state,
+                    "generation": self._generation,
+                    "error": self._release_error or (self._snapshot.error if state == "error" else "")}
+
+    def _invalidate(self, message):
+        self._jpeg = None
+        self._snapshot = VisionSnapshot(
+            timestamp=time.monotonic(), enabled=self._enabled, generation=self._generation,
+            backend=self._backend if self._enabled else "disabled", error=message,
+        )
+        if self.identity_service is not None:
+            self.identity_service.clear_current()
+
+    def set_enabled(self, enabled: bool) -> dict:
+        if type(enabled) is not bool:
+            raise ValueError("Camera enabled must be true or false")
+        with self._lock:
+            if self._enabled != enabled:
+                self._enabled = enabled
+                self._generation += 1
+                self._invalidate("Camera starting; waiting for a fresh image" if enabled else "Camera switched off")
+                if self.identity_service is not None:
+                    self.identity_service.cancel_enrollment("Camera state changed; start enrollment again")
+                self._wake.set()
+            return self.control_state()
+
+    def _current(self, generation):
+        with self._lock:
+            return self._enabled and not self._stop.is_set() and generation == self._generation
 
     def get_snapshot(self) -> VisionSnapshot:
         with self._lock:
@@ -225,20 +287,32 @@ class VisionService:
 
     def _close_camera(self) -> None:
         camera = self._camera
-        self._camera = None
         camera_kind = self._camera_kind
-        self._camera_kind = "none"
-        self._camera_format = ""
         if camera is None:
             return
-        try:
-            if camera_kind == "picamera2":
+        if camera_kind == "picamera2":
+            try:
                 camera.stop()
-                camera.close()
-            else:
-                camera.release()
-        except Exception:
-            pass
+            except Exception:
+                pass  # close must still be attempted if streaming stop failed.
+            camera.close()
+        else:
+            camera.release()
+        self._camera = None
+        self._camera_kind = "none"
+        self._camera_format = ""
+
+    def _release_hardware(self) -> bool:
+        try:
+            self._close_camera()
+        except Exception as exc:
+            with self._lock:
+                self._release_error = f"Camera release failed: {str(exc)[:140]}"
+            return False
+        with self._lock:
+            self._release_error = ""
+            self._released.set()
+        return True
 
     def _read_frame(self):
         try:
@@ -329,7 +403,15 @@ class VisionService:
             aligned = cv2.resize(square, (112, 112))
         return np.asarray(self._recognizer.feature(aligned), dtype=np.float32).reshape(-1)
 
-    def process_frame(self, frame) -> VisionSnapshot:
+    def process_frame(self, frame, generation=None) -> VisionSnapshot:
+        # Serialize identity/enrollment writes with OFF, and discard a read
+        # completed after a toggle even if the camera was quickly enabled again.
+        with self._lock:
+            if not self._enabled or self._stop.is_set() or (generation is not None and generation != self._generation):
+                return self._snapshot
+            return self._process_frame(frame)
+
+    def _process_frame(self, frame) -> VisionSnapshot:
         resized, detections = self._detect(frame)
         detections.sort(key=lambda item: item[2] * item[3], reverse=True)
         identity = IdentityResult()
@@ -379,13 +461,21 @@ class VisionService:
             identity=identity,
             backend=self._backend,
             error="",
+            enabled=True,
+            generation=self._generation,
         )
         with self._lock:
             self._snapshot = snapshot
             self._jpeg = encoded.tobytes() if ok else None
         return snapshot
 
-    def _set_error(self, message: str) -> None:
+    def _set_error(self, message: str, generation=None) -> None:
+        with self._lock:
+            if not self._enabled or self._stop.is_set() or (generation is not None and generation != self._generation):
+                return
+            self._publish_error(message)
+
+    def _publish_error(self, message: str) -> None:
         if self._snapshot.error != message[:200]:
             print(f"[VisionService Error] {message}")
         jpeg_fallback = None
@@ -404,43 +494,68 @@ class VisionService:
                 pass
         with self._lock:
             self._snapshot = VisionSnapshot(
-                timestamp=time.monotonic(), healthy=False, backend=self._backend, error=message[:200]
+                timestamp=time.monotonic(), healthy=False, backend=self._backend, error=message[:200],
+                enabled=self._enabled, generation=self._generation,
             )
             self._jpeg = jpeg_fallback
+            if self.identity_service is not None:
+                self.identity_service.clear_current()
 
     def _run(self) -> None:
-        try:
-            self._configure_models()
-        except Exception as exc:
-            self._set_error(f"Model configuration failed: {exc}")
-            return
-
+        configured = False
         reconnect_delay = 2.0
-        while not self._stop.is_set():
-            started = time.monotonic()
-            if self._camera is None:
-                try:
-                    self._open_camera()
-                except Exception as exc:
-                    self._set_error(f"Waiting for camera: {exc}")
-                    self._stop.wait(reconnect_delay)
-                    reconnect_delay = min(30.0, reconnect_delay * 1.7)
+        try:
+            while not self._stop.is_set():
+                self._wake.clear()
+                if self._stop.is_set():
+                    break
+                with self._lock:
+                    enabled, generation = self._enabled, self._generation
+                if not enabled or self._release_error:
+                    released = self._release_hardware()
+                    if not released or not self.enabled:
+                        self._wake.wait(None if released else 2.0)
                     continue
-                reconnect_delay = 2.0
-
-            frame = self._read_frame()
-            if frame is None:
-                self._set_error("Camera returned no frame; reconnecting...")
-                self._close_camera()
-                self._stop.wait(1.0)
-                continue
-
-            try:
-                self.process_frame(frame)
-            except Exception as exc:
-                self._set_error(f"Vision processing failed: {exc}")
-                self._stop.wait(0.2)
-                continue
-
-            self._stop.wait(max(0.0, self.period - (time.monotonic() - started)))
-        self._close_camera()
+                started = time.monotonic()
+                if not configured:
+                    try:
+                        self._configure_models()
+                        configured = True
+                    except Exception as exc:
+                        self._set_error(f"Model configuration failed: {exc}", generation)
+                        self._wake.wait(2.0)
+                        continue
+                if not self._current(generation):
+                    continue
+                if self._camera is None:
+                    self._released.clear()
+                    try:
+                        self._open_camera()
+                    except Exception as exc:
+                        self._set_error(f"Waiting for camera: {exc}", generation)
+                        self._release_hardware()
+                        self._wake.wait(reconnect_delay)
+                        reconnect_delay = min(30.0, reconnect_delay * 1.7)
+                        continue
+                    reconnect_delay = 2.0
+                if not self._current(generation):
+                    self._release_hardware()
+                    continue
+                frame = self._read_frame()
+                if not self._current(generation):
+                    self._release_hardware()
+                    continue
+                if frame is None:
+                    self._set_error("Camera returned no frame; reconnecting...", generation)
+                    self._release_hardware()
+                    self._wake.wait(1.0)
+                    continue
+                try:
+                    self.process_frame(frame, generation)
+                except Exception as exc:
+                    self._set_error(f"Vision processing failed: {exc}", generation)
+                    self._wake.wait(0.2)
+                    continue
+                self._wake.wait(max(0.0, self.period - (time.monotonic() - started)))
+        finally:
+            self._release_hardware()

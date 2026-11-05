@@ -10,7 +10,7 @@ from collections import deque
 from difflib import SequenceMatcher
 from typing import Callable
 
-from src.core.models import RobotMode
+from src.core.models import RobotMode, camera_session_current
 
 
 class BehaviorController:
@@ -179,6 +179,8 @@ class BehaviorController:
     def _emit_greeting_if_needed(self, vision) -> None:
         if self.demo_active() or not vision.faces:
             return
+        if not camera_session_current(vision, self.vision_service.get_snapshot()):
+            return
 
         now = time.monotonic()
         identity = vision.identity
@@ -196,7 +198,8 @@ class BehaviorController:
             )
             self.event_callback(
                 "greeting",
-                {"user_id": identity.user_id, "name": identity.name, "confidence": identity.confidence},
+                {"user_id": identity.user_id, "name": identity.name, "confidence": identity.confidence,
+                 "camera_generation": vision.generation},
             )
         else:
             if now - self._last_greeted.get(-1, 0.0) < 60.0:
@@ -209,10 +212,14 @@ class BehaviorController:
                 "person", "New person", "A person entered the camera view.", 0.7,
                 self.vision_service.get_jpeg(), speak=False,
             )
-            self.event_callback("greeting_unknown", {})
+            self.event_callback("greeting_unknown", {"camera_generation": vision.generation})
 
     def _explore(self) -> None:
         if self.arbiter.mode != RobotMode.EXPLORING:
+            return
+        if self.vision_service is not None and not self.vision_service.get_snapshot().enabled:
+            self.arbiter.halt("camera-disabled")
+            self.arbiter.set_mode(RobotMode.IDLE)
             return
         sensors = self.sensor_sampler.get_snapshot()
         center_enabled = sensors.center_enabled(getattr(self.arbiter, "front_sensor_enabled", True))
@@ -307,6 +314,8 @@ class BehaviorController:
                 return
             if hasattr(self.vision_analyzer, "analyze_discovery"):
                 result = self.vision_analyzer.analyze_discovery(jpeg, self._last_visual_observation)
+                if not camera_session_current(vision, self.vision_service.get_snapshot()):
+                    return
                 obs = " ".join(str(result.get("observation", "")).split())
                 if not obs or not result.get("interesting"):
                     return
@@ -326,6 +335,8 @@ class BehaviorController:
                 )
             elif hasattr(self.vision_analyzer, "describe"):
                 obs = self.vision_analyzer.describe(jpeg)
+                if not camera_session_current(vision, self.vision_service.get_snapshot()):
+                    return
                 if obs:
                     self._last_visual_observation = obs
                     self._add_discovery(

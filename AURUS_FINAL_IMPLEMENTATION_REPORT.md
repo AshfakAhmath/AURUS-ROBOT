@@ -9,6 +9,8 @@ on every run, with demo-only EQ/compression added in S. Saved demo recordings
 have been removed. Section P's remaining
 valid-sensor policy is unchanged: partial coverage is a warning and strict
 coverage is opt-in. Earlier sections retain the history of prior revisions.
+Section T adds the dashboard camera ON/OFF control, fresh-session checks and
+camera-off exploration pause without changing speech or ultrasonic policy.
 
 ## A. Overview
 
@@ -1099,3 +1101,94 @@ Actual verification:
 No live API request, physical playback, GPIO/motor operation, private `.env`
 change, deployment, service action, commit or push was performed. No runtime
 dependency was added. The provided Pi test is the remaining live confirmation.
+
+## T. Dashboard Camera ON/OFF — 2026-11-05
+
+The operator approved a simple Camera ON/OFF control to pause unnecessary
+capture and face processing during the expo. This follow-up started from clean
+`main` at `6be17422fdb195ec7ab63440d23a8c3c9c8f29e2` with no pre-existing
+uncommitted changes. It adds no separate face-detection-only switch.
+
+The Visual identity panel has a Turn camera off/on button. OFF clears the live
+image, current identity and recognition candidates, cancels unfinished
+enrollment, and requests hardware release. The existing single camera worker
+alone performs camera open/read/close operations. OFF waits without capture or
+model processing; ON wakes the same worker. Rapid OFF/ON changes invalidate the
+old session and close its device before opening another. A blocked driver read
+shows Stopping rather than falsely claiming release. Release errors remain
+visible and are retried; camera ownership is retained until close succeeds.
+
+The default initial state is configured by:
+
+```dotenv
+AURUS_CAMERA_ENABLED=true
+```
+
+True preserves previous startup behavior. False skips initial model loading and
+capture until explicitly enabled. Dashboard changes last until restart; no
+private `.env` was modified automatically. Saved identities, face embeddings
+and memories are not deleted. Enrollment requires a healthy, fresh image and
+its start is serialized with the camera control request.
+
+Snapshots and control telemetry carry enabled/session-generation fields. A
+read or processing/error publication from an older session cannot overwrite
+OFF or a newly enabled session. Existing vision questions, MCP capture_image,
+exploration descriptions and face greetings reject late results across
+OFF/ON. Already delivered images/messages are not retroactively removed from
+historical discovery logs or completed conversations. No new cloud request is
+required for changing camera state.
+
+OFF during Explore halts the arbiter first, ends the mission and returns to
+idle. ON never resumes the mission automatically. The arbiter rejects late
+explore-forward and curiosity-scan commands outside Explore so an in-flight
+scan cannot undo that pause. Other manual/MCP movement, ultrasonic collision
+policy, E-STOP, normal speech and Groq demo narration/gestures are unchanged.
+
+SocketIO validates actual booleans and broadcasts the control state to all
+dashboards. Disabled is distinct from a camera fault. The UI removes the old
+stream URL and identity, displays OFF/starting/stopping/error status, disables
+enrollment/memory/Explore controls when appropriate, and reconnects a new stream
+only for a fresh enabled session. Stale telemetry cannot restore an old image,
+stream session or recognized visitor. Disconnect hides the browser's old view
+and disables camera controls until it reconnects.
+
+Changed/new source and documentation:
+
+| File | Change |
+| --- | --- |
+| `src/services/vision_service.py` | Desired state, one worker, interruptible waits, owner-only release/retry, frame invalidation and serialized identity writes |
+| `src/core/models.py` | Enabled/generation vision fields and same-session result validation |
+| `src/runtime.py` | Startup setting, camera control, Explore pause/guard, enrollment checks, fresh visual response/greeting validation and health |
+| `src/services/behavior_controller.py` | Camera-off exploration stop and stale greeting/observation suppression |
+| `src/services/mcp_agent_service.py` | Camera-off feedback and same-session capture results |
+| `src/services/motion_arbiter.py` | Reject late Explore-only movement after a mode change |
+| `src/web/app.py` | Camera state on connect, strict boolean event and shared dashboard updates |
+| `src/web/templates/index.html`, `src/web/static/css/evaluation.css`, `src/web/static/js/evaluation.js` | Switch, no-camera overlay, status styling, fresh stream/identity handling and disabled controls |
+| `.env.example` | Default camera startup switch |
+| `tests/test_camera_control.py` (new), `pytest.ini` | 21 simulated lifecycle, cloud, mode, identity and multi-dashboard cases; discovery |
+| `docs/PI_MANUAL_SETUP.md`, `AURUS_FINAL_IMPLEMENTATION_REPORT.md` | Manual Pi rollout/checks and this verification record |
+
+Actual verification:
+
+- The initial existing suite found one simulation-only exploration harness
+  without a vision service. Preserved that optional legacy/test caller while
+  enforcing the camera-off guard on the real runtime's vision service.
+- The first new camera suite passed its behavior assertions but failed cleanup
+  because the fake demo omitted owner_disconnected. Corrected the test fake;
+  no production disconnect behavior was weakened.
+- Targeted camera/remaining-sensor suite: **46 passed**, 2.68 s.
+- Final `python -m pytest -q -rs`: **246 passed, 0 failed, 2 skipped**, 10.68 s.
+  Skips remain the existing OpenCV-unavailable cases. The existing
+  pytest-asyncio fixture-loop-scope deprecation warning remains.
+- Isolated headless Edge exercised camera ON/OFF requests, pending controls,
+  start/stop state, stream removal/reconnection, disabled identity/Explore
+  actions, stale health/identity telemetry and disconnect/reconnect. Browser
+  **20 assertions** and visual OFF-state review passed, including a restarted
+  server with a reset generation counter; no real server/hardware was
+  connected. Source compilation, JavaScript syntax and final diff checks passed.
+
+No real camera, microphone, speaker, GPIO/motor or live cloud API was operated.
+No Pi deployment, service change, private key/`.env` edit, commit or push was
+performed. Hardware driver release/reconnection, actual CPU/temperature benefit
+and physical Explore stopping remain Pi/operator checks. See the manual setup
+guide's camera section after deliberately transferring the reviewed changes.

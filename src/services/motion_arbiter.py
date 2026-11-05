@@ -115,6 +115,8 @@ class MotionArbiter:
         with self._lock:
             if self._estop:
                 return False
+            if bounded.source in ("explore-forward", "curiosity-scan") and self._mode != RobotMode.EXPLORING:
+                return False
             if self._cancelled and any(values):
                 return False
             if any((bounded.vx, bounded.vy, bounded.omega)) and not self._dashboard_connected:

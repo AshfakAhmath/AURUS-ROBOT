@@ -148,3 +148,48 @@ disconnect still cancel later actions. Press Ctrl+C to stop AURUS; keep the
 service disabled and do not run a second hardware owner concurrently.
 
 Reference: [Groq Orpheus speech](https://console.groq.com/docs/text-to-speech/orpheus).
+
+## 6. Camera ON/OFF control
+
+After deliberately updating the Pi code, stop the manual AURUS process with
+Ctrl+C, start it again with `.venv/bin/python run.py`, and refresh the dashboard
+(Ctrl+Shift+R if its old JavaScript/CSS is cached). No new Python package is
+required for this change.
+
+The **Visual identity** panel now has a **Turn camera off / Turn camera on**
+button above the video. This controls actual capture and face processing.
+
+- OFF clears the current image and recognized visitor, cancels unfinished
+  enrollment, and releases the camera through its existing single worker.
+  Previously saved people, face models and memories remain stored.
+- The panel shows **Stopping camera...** while an in-flight camera operation
+  finishes, then **Camera switched off** after release. Driver release failures
+  are shown as camera errors and retried; they are not reported as a completed
+  OFF transition. The application does not create a second camera owner.
+- Enrollment and visual questions are unavailable while OFF. Old frames and
+  AI descriptions that cross an OFF/ON transition are rejected. Re-enabling
+  requires fresh frames before enrollment or identification can resume.
+- Switching OFF during Explore stops motion and returns to idle. Switching ON
+  does not resume movement: choose Explore again when ready.
+- Manual ultrasonic-controlled movement, ordinary speech and the scripted
+  Groq FIT Expo demo remain available while the camera is OFF.
+- All connected dashboards receive the state. Disconnecting hides that
+  browser's old image and disables its camera controls until reconnection.
+
+The switch changes runtime state only. Set the initial state in the existing
+private `.env` if desired:
+
+```dotenv
+AURUS_CAMERA_ENABLED=true
+```
+
+True preserves the previous camera-on startup behavior; false starts with
+capture and model initialization paused. Restart reads this value again.
+Keep one AURUS instance running; do not launch separate camera diagnostics
+while the camera is still reported as stopping or in a release-error state.
+
+For a stationary Pi check, toggle OFF and confirm the image disappears, face
+enrollment is disabled and “What can you see?” explains that the camera is off.
+Toggle ON and wait for a fresh image. Recognize/enroll again, then check that
+text chat and the demo still work. Test Explore pause only in a suitable clear
+area under operator control; no physical movement test was run automatically.

@@ -8,7 +8,7 @@ import threading
 import time
 from typing import Any
 
-from src.core.models import RobotMode
+from src.core.models import RobotMode, camera_session_current
 from src.services.motion_execution import execute_sequence
 from src.services.distance_motion import prepare_movement, distance_feedback
 
@@ -564,6 +564,8 @@ class MCPAgentService:
 
             elif name == "capture_image":
                 snapshot = self.runtime.vision.get_snapshot()
+                if not snapshot.enabled:
+                    return json.dumps({"status": "error", "message": "Camera is switched off. Turn it on in the dashboard."})
                 if not snapshot.healthy or snapshot.age > 1.0:
                     return json.dumps({
                         "status": "error",
@@ -573,6 +575,8 @@ class MCPAgentService:
                 jpeg = self.runtime.vision.get_jpeg()
                 vision_provider = getattr(self.runtime, "groq_vision", None)
                 description = vision_provider.describe(jpeg) if vision_provider else ""
+                if not camera_session_current(snapshot, self.runtime.vision.get_snapshot()):
+                    return json.dumps({"status": "error", "message": "Camera changed during analysis. Ask again after enabling it."})
                 if not description:
                     return json.dumps({
                         "status": "error",

@@ -64,6 +64,8 @@ def create_app(runtime):
             runtime.dashboard_connected(True)
         emit("system_health", runtime.health())
         emit("telemetry", runtime.telemetry())
+        if callable(getattr(runtime, "camera_control", None)):
+            emit("camera_configuration", runtime.camera_control())
 
     @socketio.on("disconnect")
     def on_disconnect():
@@ -159,7 +161,10 @@ def create_app(runtime):
     def set_mode(data):
         mode = str(payload(data).get("mode", "idle"))
         if not runtime.set_mode(mode):
-            emit("command_error", {"message": f"Mode '{mode}' rejected. Clear E-STOP first if latched."})
+            camera_off = (mode.lower() in ("explore", "exploring")
+                          and callable(getattr(runtime, "camera_control", None))
+                          and not runtime.camera_control()["enabled"])
+            emit("command_error", {"message": "Turn the camera on before starting Explore." if camera_off else f"Mode '{mode}' rejected. Clear E-STOP first if latched."})
 
     @socketio.on("set_audio_output")
     def set_audio_output(data):
@@ -169,6 +174,20 @@ def create_app(runtime):
             emit("command_error", {"message": message})
         else:
             socketio.emit("system_health", runtime.health())
+
+    @socketio.on("set_camera_enabled")
+    def set_camera_enabled(data):
+        enabled = payload(data).get("enabled")
+        if type(enabled) is not bool:
+            emit("command_error", {"message": "Camera enabled must be true or false."})
+            return
+        try:
+            state = runtime.set_camera_enabled(enabled)
+        except ValueError as exc:
+            emit("command_error", {"message": str(exc)})
+            return
+        socketio.emit("camera_configuration", state)
+        socketio.emit("system_health", runtime.health())
 
     @socketio.on("start_listening")
     def start_listening(_data=None):

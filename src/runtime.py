@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Callable
 
-from src.core.models import RobotMode
+from src.core.models import RobotMode, camera_session_current
 from src.hardware.motors import MecanumDriver
 from src.hardware.sensors import ProximitySensor
 from src.memory.repository import MemoryRepository
@@ -42,7 +42,10 @@ class RobotRuntime:
             front_sensor_enabled=front_sensor_enabled,
             require_full_coverage=config.REQUIRE_FULL_SENSOR_COVERAGE,
         )
-        self.vision = VisionService(self.identity, self.project_root / "models")
+        self.vision = VisionService(
+            self.identity, self.project_root / "models",
+            enabled=os.getenv("AURUS_CAMERA_ENABLED", "true").strip().lower() == "true",
+        )
 
         microphone_index = os.getenv("MIC_INDEX")
         try:
@@ -202,6 +205,8 @@ class RobotRuntime:
         mode = aliases.get(value.lower())
         if mode is None:
             return False
+        if mode == RobotMode.EXPLORING and not self.camera_control()["enabled"]:
+            return False
         previous = self.arbiter.mode
         accepted = self.arbiter.set_mode(mode)
         behavior = getattr(self, "behavior", None)
@@ -211,6 +216,29 @@ class RobotRuntime:
             elif previous == RobotMode.EXPLORING:
                 behavior.finish_exploration()
         return accepted
+
+    def camera_control(self) -> dict:
+        vision = getattr(self, "vision", None)
+        if vision is None:
+            return {"enabled": True, "state": "starting", "generation": 0, "error": ""}
+        if hasattr(vision, "control_state"):
+            return vision.control_state()
+        snapshot = vision.get_snapshot()
+        return {"enabled": snapshot.enabled, "state": "on" if snapshot.healthy else "starting",
+                "generation": snapshot.generation, "error": snapshot.error}
+
+    def set_camera_enabled(self, enabled: bool) -> dict:
+        if type(enabled) is not bool:
+            raise ValueError("Camera enabled must be true or false")
+        with self._lock:
+            if not enabled and self.arbiter.mode == RobotMode.EXPLORING:
+                # Halt before waiting on the camera/identity lock. Resuming
+                # capture never resumes movement without a new Explore command.
+                self.arbiter.halt("camera-disabled")
+                self.set_mode("idle")
+            state = self.vision.set_enabled(enabled)
+        self.emit("enrollment_progress", self.identity.get_enrollment().as_dict())
+        return state
 
     def set_audio_output(self, mode: str) -> bool:
         if self.demo_active:
@@ -264,9 +292,17 @@ class RobotRuntime:
         self.repository.log_event("estop", "Emergency stop cleared")
 
     def start_enrollment(self, name: str):
+        with self._lock:
+            return self._start_enrollment(name)
+
+    def _start_enrollment(self, name: str):
         if self.demo_active:
             raise ValueError("Stop the FIT Expo demo before enrollment.")
         snapshot = self.vision.get_snapshot()
+        if not snapshot.enabled:
+            raise ValueError("Camera is switched off. Turn it on before enrolling a face.")
+        if not snapshot.healthy or snapshot.age > 1.0:
+            raise ValueError("Wait for a fresh camera image before enrolling a face.")
         if "sface" in snapshot.backend:
             status = self.identity.begin_enrollment(name)
         elif snapshot.backend in ("haar-session-fallback", "video-only-fallback"):
@@ -470,7 +506,10 @@ class RobotRuntime:
         name_match = re.search(r"(?:my name is|call me)\s+([a-z][a-z .'-]{0,60})", clean, re.IGNORECASE)
         if name_match:
             name = name_match.group(1).strip(" .")
-            status = self.start_enrollment(name)
+            try:
+                status = self.start_enrollment(name)
+            except ValueError as exc:
+                return self._announce(str(exc), source, clean, "local")
             response = (
                 f"Hello {name}. Hold still while I learn your face."
                 if status.active
@@ -501,6 +540,8 @@ class RobotRuntime:
         )
         if any(phrase in lower for phrase in visual_questions):
             snapshot = self.vision.get_snapshot()
+            if not snapshot.enabled:
+                return self._announce("My camera is switched off. Turn it on in the dashboard to describe the scene.", source, clean, "local")
             if not snapshot.healthy or snapshot.age > 1.0:
                 return self._announce(
                     "I do not have a fresh camera image to describe.",
@@ -513,6 +554,8 @@ class RobotRuntime:
                     source, clean, "local", getattr(vision_provider, "error", "Groq unavailable"),
                 )
             description = vision_provider.describe(self.vision.get_jpeg())
+            if not camera_session_current(snapshot, self.vision.get_snapshot()):
+                return self._announce("The camera changed while I was looking. Please turn it on and ask again.", source, clean, "local")
             if not description:
                 return self._announce(
                     "I could not analyze the current camera image.",
@@ -526,6 +569,8 @@ class RobotRuntime:
             return self._announce(response, source, clean, "local", "" if ok else "identity required")
 
         if "explore" in lower:
+            if not self.camera_control()["enabled"]:
+                return self._announce("Turn my camera on in the dashboard before starting Explore.", source, clean, "local")
             if self.set_mode("explore"):
                 return self._announce(
                     "Curiosity mission started. I will explore safely, explain route changes, and report meaningful discoveries.",
@@ -570,11 +615,16 @@ class RobotRuntime:
     def _handle_behavior_event(self, event: str, payload: dict) -> None:
         if self.demo_active and event in ("greeting", "greeting_unknown", "behavior_notice", "mission_summary"):
             return
-        if event == "greeting":
-            self._announce(f"Welcome back, {payload['name']}! I recognize you.", "vision", "", "local")
-        elif event == "greeting_unknown":
-            self._announce("Hello there! I see you, but I don't know your name yet. You can say 'my name is' to introduce yourself.", "vision", "", "local")
-        elif event == "behavior_notice":
+        if event in ("greeting", "greeting_unknown"):
+            with self._lock:
+                camera = self.camera_control()
+                if not camera["enabled"] or payload.get("camera_generation", camera["generation"]) != camera["generation"]:
+                    return
+                message = (f"Welcome back, {payload['name']}! I recognize you." if event == "greeting" else
+                           "Hello there! I see you, but I don't know your name yet. You can say 'my name is' to introduce yourself.")
+                self._announce(message, "vision", "", "local")
+            return
+        if event == "behavior_notice":
             self._announce(
                 payload.get("text", ""), "behavior", "",
                 payload.get("provider", "local"),
@@ -591,13 +641,17 @@ class RobotRuntime:
     def health(self) -> dict:
         sensors = self.sensor_sampler.get_snapshot()
         vision = self.vision.get_snapshot()
+        camera = self.camera_control()
         return {
             "runtime": self._started,
             "motors": True,
             "motor_vector_multiplier": self.driver.speed_multiplier,
             "motor_output_scale": self.driver.output_scale,
             "sensors": sensors.healthy and not sensors.is_stale(),
-            "camera": vision.healthy,
+            "camera": vision.healthy and camera["enabled"] and vision.generation == camera["generation"],
+            "camera_enabled": camera["enabled"],
+            "camera_state": camera["state"],
+            "camera_generation": camera["generation"],
             "vision_backend": vision.backend,
             "camera_error": vision.error,
             "microphone": self.speech.healthy,

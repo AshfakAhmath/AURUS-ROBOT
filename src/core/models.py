@@ -228,6 +228,8 @@ class VisionSnapshot:
     identity: IdentityResult = field(default_factory=IdentityResult)
     backend: str = "unavailable"
     error: str = "not started"
+    enabled: bool = True
+    generation: int = 0
 
     @property
     def age(self) -> float:
@@ -239,6 +241,8 @@ class VisionSnapshot:
         return {
             "timestamp": self.timestamp,
             "healthy": self.healthy,
+            "enabled": self.enabled,
+            "generation": self.generation,
             "face_count": len(self.faces),
             "faces": list(self.faces),
             "primary_center_x": self.primary_center_x,
@@ -248,3 +252,9 @@ class VisionSnapshot:
             "error": self.error,
             "age_ms": None if self.age == float("inf") else round(self.age * 1000, 1),
         }
+
+
+def camera_session_current(snapshot: VisionSnapshot, current: VisionSnapshot) -> bool:
+    """A result started before an OFF/ON transition must never be reused."""
+    return (snapshot.enabled and current.enabled and current.healthy
+            and snapshot.generation == current.generation)

@@ -502,6 +502,17 @@ kbd { padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px; color
 }
 
 /* Sensor controls extend the existing awareness panel. */
+.camera-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.camera-actions .button { min-height: 32px; font-size: 10px; }
+.camera-panel button:disabled, .camera-panel input:disabled, .mode-grid button:disabled { opacity: .45; cursor: not-allowed; }
+.camera-overlay { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 28px; color: var(--muted); text-align: center; background: #090e13; }
+.camera-overlay strong { color: var(--text); font-size: 16px; }
+.camera-overlay span { max-width: 350px; font-size: 12px; line-height: 1.5; }
+.camera-overlay[hidden], .camera-frame img[hidden] { display: none; }
+.camera-status { z-index: 3; }
+.camera-status.inactive i { background: var(--quiet); box-shadow: none; }
+.health-item.disabled { opacity: .65; }
+.health-item.disabled .health-name i { background: var(--quiet); box-shadow: none; }
 .ultrasonic-control { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border, #263c3b); }
 .sensor-authorization { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .sensor-authorization input { min-width: 0; max-width: 220px; }
