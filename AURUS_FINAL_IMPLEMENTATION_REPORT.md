@@ -13,6 +13,10 @@ Section T adds the dashboard camera ON/OFF control, fresh-session checks and
 camera-off exploration pause without changing speech or ultrasonic policy.
 Section V adds brief dashboard object announcements through normal TTS and
 playback-linked transcripts below the exhibition face.
+Section W supersedes the earlier no-strafe/demo-proximity behavior: supervised
+demo gestures bypass ultrasonic restrictions, include short strafes and smooth
+ramps, then narrate live camera objects. MCP motion retains 20/25 cm stopping/
+caution thresholds; manual and Explore retain their previous sensor policy.
 
 ## A. Overview
 
@@ -1290,3 +1294,72 @@ No live API, physical device, private `.env` or key, Pi deployment, service
 change, commit or push was involved. Restart the updated Pi application and
 hard-refresh both browser pages; no additional environment setting or package
 is required. Actual speaker output and display timing remain operator Pi checks.
+
+## W. Refined Demo, Live Objects and MCP Margins — 2026-11-05
+
+Started from clean main at `b1a2da357461866048b5d310608edf13b65c453c`.
+The operator confirmed that the wheels were secured and requested left/right
+strafing. The subsequent instruction explicitly removed ultrasonic restrictions
+from demo gestures. The final MCP clarification retains obstacle stopping with
+a smaller 20–25 cm safety band rather than removing operator stop controls.
+
+The FIT Expo sequence now performs forward, backward, left/right strafe and
+left/right rotation gestures. Each lasts 0.6 seconds at peak requested axis
+value 0.20, with smoothstep acceleration and deceleration at 25 ms command
+intervals and a stationary pause between gestures. Existing wheel mixing,
+strafe compensation, drive scaling and motor ownership remain unchanged.
+These are bounded speed commands without a physical-distance guarantee.
+
+The arbiter grants an explicitly armed ultrasonic bypass only to the
+`fit-expo-demo` source in PERFORMING mode, with requested components no larger
+than 0.20. Proximity/coverage checks are bypassed even with no usable sensors.
+E-STOP, explicit Stop Demo, owner disconnect, command expiry and driver-error
+cancellation still stop output immediately. The bypass is cleared on completion,
+cancellation, disconnect, E-STOP, mode change or a cancelled motor decision.
+The dashboard identifies the active bypass. The operator must keep the demo's
+movement area clear; no physical clearance guarantee is provided by the demo.
+
+After capabilities, the robot halts and uses a fresh camera frame for one
+Groq object scan. It names up to three objects and adds "and more" for longer
+lists, using fresh Groq demo speech and existing playback captions. Empty,
+OFF, unavailable, failed or changed-camera results are handled without inventing
+objects. The camera is not enabled automatically. Camera session/health/freshness
+is checked again before the result can play. A stale object line skips without
+cancelling the introduction; an actual TTS failure still cancels it. Stop/E-STOP
+discards late cloud results, although an in-flight request may finish before
+the demo worker exits. Already-started audio retains the existing stop behavior.
+
+MCP moves/spins/animations in both the main runtime and standalone server stop
+below 20 cm and scale the affected axis to 35% from 20 to below 25 cm. The old
+35 cm caution and 45/75 cm degraded-front distance margins do not apply to MCP.
+Its coverage policy and all-readings-unavailable stop remain intact. Sensor
+tool reports expose the same thresholds, and the agent prompt states them.
+Explicit stop tools, E-STOP, disconnect and bounded durations remain available.
+Manual and Explore sensor thresholds were not changed.
+
+Implementation: `src/services/exhibition_demo.py`, `demo_script.py`,
+`motion_arbiter.py`, `mcp_agent_service.py`, `tts_service.py`,
+`servers/aurus_mcp_server.py`, dashboard script/template, README and Pi guide.
+Regression changes cover the demo, remaining-sensor policy and distance
+speed-limiting tests. The earlier 30 cm caution fixture now uses 22.5 cm so it
+continues verifying that slowed distance movement is not claimed as completed.
+
+Verification:
+
+- Full `python -m pytest -q -rs`: **368 passed, 0 failed, 2 skipped**, 21.38 s.
+  Existing OpenCV-unavailable skips and pytest-asyncio warning remain.
+- Final affected demo/sensor/Groq/object-speech subset: **187 passed**, 12.40 s,
+  including the final cancellation guard.
+- Added 95 simulated cases: all-axis ramp profiles and immediate interruption,
+  scoped bypass/reset/deadman behavior, camera failures/cancellation, stale
+  synthesis rejection, and both MCP sources at 19.9/20/22.5/24.9/25/30 cm.
+- **35 isolated headless Edge assertions passed**, including camera/audio
+  regressions, visible demo bypass, retained Stop Demo button, live camera stage
+  and clearing the bypass indication on completion. No robot was connected.
+- Python parsing, dashboard JavaScript syntax and final diff checks passed.
+
+No live API request, physical camera/audio/motor operation, private `.env` edit,
+dependency installation, Pi deployment, service operation, commit or push was
+performed. No new environment entry is required. Transfer the reviewed code,
+restart the manual Pi runtime and hard-refresh both browser pages. Actual tyre
+retention, smoothness, travel and stopping performance remain physical Pi checks.

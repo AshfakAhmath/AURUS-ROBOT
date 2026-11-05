@@ -11,6 +11,7 @@ from typing import Any
 from src.core.models import RobotMode, camera_session_current
 from src.services.motion_execution import execute_sequence
 from src.services.distance_motion import prepare_movement, distance_feedback
+from src.services.motion_arbiter import MCP_CAUTION_CM, MCP_HARD_STOP_CM
 
 try:
     from groq import Groq
@@ -268,6 +269,7 @@ class MCPAgentService:
             " A blocked tool result cancels this entire objective: never retry, reroute, or resume. "
             "Never choose an alternative direction around an obstacle without a fresh user request. "
             "Missing-sensor coverage warnings alone do not mean a movement was blocked; the local movement tool applies the configured policy using remaining healthy sensors. "
+            "MCP movement stops below 20 cm and slows between 20 and 25 cm; do not impose larger distance margins. "
             "If distance calibration is missing or mismatched, explain the error and do not substitute timed movement. "
             "Explain the block in one short sentence using obstacle_direction and only a non-null "
             "obstacle_distance_cm. Do not invent distances or claim interrupted motion completed. "
@@ -552,13 +554,14 @@ class MCPAgentService:
                 data["coverage_required"] = strict
                 clearance = snapshot.available_clearance("front", center_default=center_enabled)
                 rear = snapshot.available_clearance("rear")
-                caution = self.runtime.arbiter.caution_cm if center_enabled or not strict else self.runtime.arbiter.degraded_caution_cm
+                caution = MCP_CAUTION_CM
                 return json.dumps({
                     "status": "ok", "distances_cm": {k: data[k] for k in ("fl", "f", "fr", "rl", "rr")},
                     "front_min_cm": clearance if not strict or data["coverage"]["front"] else None,
                     "rear_min_cm": rear if not strict or data["coverage"]["rear"] else None,
                     "front_clear": clearance is not None and (not strict or data["coverage"]["front"]) and clearance >= caution,
-                    "rear_clear": rear is not None and (not strict or data["coverage"]["rear"]) and rear >= self.runtime.arbiter.caution_cm,
+                    "rear_clear": rear is not None and (not strict or data["coverage"]["rear"]) and rear >= caution,
+                    "hard_stop_cm": MCP_HARD_STOP_CM, "caution_cm": caution,
                     "sensors": data,
                 }, allow_nan=False)
 

@@ -57,6 +57,7 @@ class DemoSpeech:
     finished: threading.Event = field(default_factory=threading.Event)
     browser_sent: bool = False
     success: bool = False
+    valid_when: Callable[[], bool] | None = None
 
 
 class TTSService:
@@ -249,9 +250,9 @@ class TTSService:
         self.demo_error = self._demo_speech.error
         return self._demo_speech.ready
 
-    def speak_demo(self, text, on_complete, recipient_sid, cancelled) -> bool:
+    def speak_demo(self, text, on_complete, recipient_sid, cancelled, valid_when=None) -> bool:
         """Queue a fresh Groq request for this line; no saved audio is reused."""
-        job = DemoSpeech(text, on_complete, recipient_sid, cancelled)
+        job = DemoSpeech(text, on_complete, recipient_sid, cancelled, valid_when=valid_when)
         if not text.strip() or self._stop.is_set() or cancelled.is_set():
             return False
         try:
@@ -291,7 +292,8 @@ class TTSService:
 
     def _run_demo(self, job):
         self._utterance_text = job.text
-        self._valid_when = None
+        self._valid_when = lambda: (not job.cancelled.is_set()
+                                   and (job.valid_when is None or job.valid_when()))
         self._busy.set()
         self.playback_active.set()
         with self._demo_lock:
@@ -300,6 +302,7 @@ class TTSService:
         try:
             if job.cancelled.is_set() or self._stop.is_set():
                 return
+            self._check_playback_validity()
             if not self.prepare_demo_speech():
                 raise RuntimeError(self.demo_error)
             with tempfile.TemporaryDirectory(prefix="aurus-live-demo-") as scratch:
@@ -320,9 +323,12 @@ class TTSService:
                 else:
                     success = True
                 self.demo_error = "" if success else "Demo audio playback failed"
+        except SpeechCancelled:
+            self.demo_error = ""
         except Exception as exc:
             self.demo_error = str(exc)[:250]
         finally:
+            self._valid_when = None
             with self._demo_lock:
                 self._demo_job = None
             self.playback_active.clear()

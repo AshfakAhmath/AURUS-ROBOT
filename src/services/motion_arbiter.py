@@ -9,6 +9,9 @@ from dataclasses import replace
 
 from src.core.models import MotionCommand, MotionDecision, RobotMode
 
+MCP_HARD_STOP_CM = 20.0
+MCP_CAUTION_CM = 25.0
+
 
 class MotionArbiter:
     def __init__(
@@ -44,6 +47,7 @@ class MotionArbiter:
         self._dashboard_connected = False
         self._cancelled = False
         self._last_blocked: MotionDecision | None = None
+        self._demo_sensor_bypass = False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -73,6 +77,7 @@ class MotionArbiter:
             self._dashboard_connected = connected
             if not connected:
                 self._command = MotionCommand.stop("dashboard-disconnected")
+                self._demo_sensor_bypass = False
         if not connected:
             self.driver.stop()
 
@@ -83,12 +88,14 @@ class MotionArbiter:
             self._mode = mode
             self._command = MotionCommand.stop("mode-change")
             self._cancelled = False
+            self._demo_sensor_bypass = False
         self.driver.stop()
         return True
 
     def emergency_stop(self, reason: str = "operator emergency stop") -> None:
         with self._lock:
             self._estop = True
+            self._demo_sensor_bypass = False
             self._mode = RobotMode.ESTOP
             self._command = MotionCommand.stop("estop", priority=1000)
         self.driver.stop()
@@ -96,6 +103,7 @@ class MotionArbiter:
     def clear_estop(self) -> None:
         with self._lock:
             self._estop = False
+            self._demo_sensor_bypass = False
             self._mode = RobotMode.IDLE
             self._command = MotionCommand.stop("estop-cleared")
         self.driver.stop()
@@ -153,12 +161,23 @@ class MotionArbiter:
         with self._lock:
             return self._last_blocked
 
+    def set_demo_sensor_bypass(self, enabled: bool) -> bool:
+        """Scope the operator-requested proximity bypass to scripted demo motion."""
+        with self._lock:
+            self._demo_sensor_bypass = bool(
+                enabled and self._mode == RobotMode.PERFORMING
+                and not self._estop and self._dashboard_connected and not self._cancelled
+            )
+            return self._demo_sensor_bypass
+
     def _evaluate(self, command: MotionCommand) -> MotionDecision:
         now = time.time()
-        sensors = self.sensor_sampler.get_snapshot()
         with self._lock:
             estop = self._estop
             connected = self._dashboard_connected
+            demo_bypass = (self._demo_sensor_bypass and self._mode == RobotMode.PERFORMING
+                           and command.source == "fit-expo-demo"
+                           and max(abs(command.vx), abs(command.vy), abs(command.omega)) <= 0.20)
 
         if estop:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "emergency stop latched")
@@ -168,6 +187,11 @@ class MotionArbiter:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "command expired (deadman stop)")
         if not any((command.vx, command.vy, command.omega)):
             return MotionDecision(now, command, 0.0, 0.0, 0.0, True, "stopped")
+        if demo_bypass:
+            # E-STOP, disconnect, command expiry and cancellation remain enforced.
+            return MotionDecision(now, command, command.vx, command.vy, command.omega,
+                                  True, "scripted demo: ultrasonic restrictions bypassed")
+        sensors = self.sensor_sampler.get_snapshot()
         if self.require_full_coverage and not sensors.states and sensors.is_stale(self.stale_after):
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "sensor data stale or unhealthy")
         distances = (sensors.fl, sensors.f, sensors.fr, sensors.rl, sensors.rr)
@@ -198,34 +222,49 @@ class MotionArbiter:
         if any(not coverage[direction] for direction in required):
             reason = "allowed with reduced coverage; unavailable sensors ignored"
 
+        # MCP exhibition commands use the operator's 20/25 cm margins. Other
+        # modes retain their configured thresholds and degraded-front policy.
+        mcp_motion = command.source in ("mcp-agent", "standalone-mcp")
+        hard_stop = MCP_HARD_STOP_CM if mcp_motion else self.hard_stop_cm
+        caution = MCP_CAUTION_CM if mcp_motion else self.caution_cm
+
         front_clearance = sensors.available_clearance("front", self.stale_after, self.front_sensor_enabled)
         rear_clearance = sensors.available_clearance("rear", self.stale_after)
         left_clearance = sensors.available_clearance("left", self.stale_after)
         right_clearance = sensors.available_clearance("right", self.stale_after)
         center_enabled = sensors.center_enabled(self.front_sensor_enabled)
-        front_hard_stop = self.hard_stop_cm if center_enabled or not self.require_full_coverage else self.degraded_hard_stop_cm
-        front_caution = self.caution_cm if center_enabled or not self.require_full_coverage else self.degraded_caution_cm
+        front_hard_stop = hard_stop if mcp_motion or center_enabled or not self.require_full_coverage else self.degraded_hard_stop_cm
+        front_caution = caution if mcp_motion or center_enabled or not self.require_full_coverage else self.degraded_caution_cm
 
         if vx > 0 and front_clearance is not None and front_clearance < front_hard_stop:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"front obstacle {front_clearance:.1f} cm", "front", front_clearance)
-        if vx < 0 and rear_clearance is not None and rear_clearance < self.hard_stop_cm:
+        if vx < 0 and rear_clearance is not None and rear_clearance < hard_stop:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"rear obstacle {rear_clearance:.1f} cm", "rear", rear_clearance)
-        if vy < 0 and left_clearance is not None and left_clearance < self.hard_stop_cm:
+        if vy < 0 and left_clearance is not None and left_clearance < hard_stop:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "left-side obstacle", "left", left_clearance)
-        if vy > 0 and right_clearance is not None and right_clearance < self.hard_stop_cm:
+        if vy > 0 and right_clearance is not None and right_clearance < hard_stop:
             return MotionDecision(now, command, 0.0, 0.0, 0.0, False, "right-side obstacle", "right", right_clearance)
         if omega:
             key = min(valid.items(), key=lambda item: item[1])
-            if key[1] < self.hard_stop_cm:
+            if key[1] < hard_stop:
                 direction = {"fl": "left", "f": "front", "fr": "right", "rl": "rear", "rr": "rear"}[key[0]]
                 return MotionDecision(now, command, 0.0, 0.0, 0.0, False, f"{direction} obstacle {key[1]:.1f} cm during rotation", direction, key[1])
 
         if vx > 0 and front_clearance is not None and front_clearance < front_caution:
             vx *= 0.35
             reason = f"forward speed limited at {front_clearance:.1f} cm"
-        elif vx < 0 and rear_clearance is not None and rear_clearance < self.caution_cm:
+        elif vx < 0 and rear_clearance is not None and rear_clearance < caution:
             vx *= 0.35
             reason = f"reverse speed limited at {rear_clearance:.1f} cm"
+
+        if mcp_motion:
+            side_clearance = left_clearance if vy < 0 else right_clearance
+            if vy and side_clearance is not None and side_clearance < caution:
+                vy *= 0.35
+                reason = f"sideways speed limited at {side_clearance:.1f} cm"
+            if omega and min(valid.values()) < caution:
+                omega *= 0.35
+                reason = f"rotation speed limited at {min(valid.values()):.1f} cm"
 
         return MotionDecision(now, command, vx, vy, omega, True, reason)
 
@@ -269,6 +308,7 @@ class MotionArbiter:
             cancelled = not decision.allowed and any((command.vx, command.vy, command.omega))
             decision = replace(decision, movement_cancelled=bool(cancelled), motors_stopped=stopped)
             if cancelled:
+                self._demo_sensor_bypass = False
                 self._command = MotionCommand.stop("safety-cancelled")
                 self._cancelled = True
                 self._last_blocked = decision

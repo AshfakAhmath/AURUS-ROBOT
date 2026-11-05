@@ -116,9 +116,56 @@ def test_demo_uses_remaining_sensors_and_can_turn_with_center_off():
     arbiter.require_full_coverage = False
     sampler.set_enabled("f", False)
     demo._run()
-    assert len(requested) == 4 and "blocked" not in spoken
+    assert len(requested) == 6 and "blocked" not in spoken
     assert any(omega for vx, vy, omega in driver.commands)
-    assert all(vy == 0 for vx, vy, omega in driver.commands)
+    assert any(vy for vx, vy, omega in driver.commands)
+
+
+@pytest.mark.parametrize('source', ['mcp-agent', 'standalone-mcp'])
+@pytest.mark.parametrize('vector', [(0.5, 0, 0), (-0.5, 0, 0), (0, -0.5, 0),
+                                   (0, 0.5, 0), (0, 0, -0.5), (0, 0, 0.5)])
+@pytest.mark.parametrize('distance', [19.9, 20, 22.5, 24.9, 25, 30])
+def test_mcp_uses_20_cm_stop_and_25_cm_caution_for_all_directions(source, vector, distance):
+    sensor, sampler, _, arbiter, _, _ = build()
+    for key in sensor.values: sensor.values[key] = distance
+    sampler.sample_once()
+    arbiter.set_mode(RobotMode.PERFORMING)
+    assert arbiter.command(source, *vector)
+    decision = arbiter.tick()
+    if distance < 20:
+        assert not decision.allowed and decision.motors_stopped
+    else:
+        assert decision.allowed
+        expected = tuple(v * (0.35 if distance < 25 else 1) for v in vector)
+        assert (decision.final_vx, decision.final_vy, decision.final_omega) == pytest.approx(expected)
+
+
+def test_mcp_center_disabled_does_not_restore_45_or_75_cm_margin():
+    sensor, sampler, _, arbiter, _, service = build()
+    sampler.set_enabled('f', False)
+    for key in sensor.values: sensor.values[key] = 30
+    sampler.sample_once()
+    arbiter.set_mode(RobotMode.PERFORMING)
+    arbiter.command('mcp-agent', .5, 0, 0)
+    decision = arbiter.tick()
+    assert decision.allowed and decision.final_vx == .5
+    data = json.loads(service._dispatch_tool('read_sensors', {}))
+    assert data['front_clear'] and data['rear_clear']
+    assert data['hard_stop_cm'] == 20 and data['caution_cm'] == 25
+    arbiter.set_mode(RobotMode.MANUAL)
+    arbiter.command('manual', .5, 0, 0)
+    assert not arbiter.tick().allowed  # Strict manual degraded-front policy stays intact.
+
+
+def test_demo_with_all_sensors_off_does_not_change_manual_no_sensor_stop():
+    _, sampler, driver, arbiter, _, demo, _, requested = demo_harness()
+    for key in ('fl', 'f', 'fr', 'rl', 'rr'): sampler.set_enabled(key, False)
+    demo._run()
+    assert len(requested) == 6 and any(any(v) for v in driver.commands)
+    arbiter.require_full_coverage = False
+    arbiter.set_mode(RobotMode.MANUAL)
+    arbiter.command('manual', .2, 0, 0)
+    assert not arbiter.tick().allowed
 
 
 def test_mcp_moves_with_partial_coverage_but_stops_for_actual_obstacle():

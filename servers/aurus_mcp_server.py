@@ -60,7 +60,7 @@ from src import config
 from src.hardware.sensors import ProximitySensor
 from src.memory.repository import MemoryRepository
 from src.core.models import RobotMode
-from src.services.motion_arbiter import MotionArbiter
+from src.services.motion_arbiter import MotionArbiter, MCP_CAUTION_CM, MCP_HARD_STOP_CM
 from src.services.motion_execution import execute_sequence
 from src.services.distance_motion import prepare_movement, distance_feedback
 from src.services.sensor_sampler import SensorSampler
@@ -339,7 +339,7 @@ def read_sensors() -> str:
     - rr: Rear-Right (angled -135°)
 
     Disabled, invalid, stale and timeout readings are null; never evidence of clearance.
-    Values below 15 cm indicate an obstacle is dangerously close.
+    MCP motion stops below 20 cm and slows between 20 and 25 cm.
     """
     _init_hardware()
     snapshot = _sampler.get_snapshot()
@@ -348,7 +348,7 @@ def read_sensors() -> str:
     data["coverage_required"] = strict
     clearance = snapshot.available_clearance("front")
     rear = snapshot.available_clearance("rear")
-    caution = _arbiter.caution_cm if snapshot.center_enabled() or not strict else _arbiter.degraded_caution_cm
+    caution = MCP_CAUTION_CM
     return json.dumps({
         "status": "ok", "simulation_mode": _sensor.is_simulation,
         "healthy": snapshot.healthy and not snapshot.is_stale(), "error": snapshot.error,
@@ -356,7 +356,8 @@ def read_sensors() -> str:
         "front_min_cm": clearance if not strict or data["coverage"]["front"] else None,
         "rear_min_cm": rear if not strict or data["coverage"]["rear"] else None,
         "front_clear": clearance is not None and (not strict or data["coverage"]["front"]) and clearance >= caution,
-        "rear_clear": rear is not None and (not strict or data["coverage"]["rear"]) and rear >= _arbiter.caution_cm,
+        "rear_clear": rear is not None and (not strict or data["coverage"]["rear"]) and rear >= caution,
+        "hard_stop_cm": MCP_HARD_STOP_CM, "caution_cm": caution,
         "sensors": data,
     }, allow_nan=False)
 

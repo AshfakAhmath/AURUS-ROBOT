@@ -279,7 +279,7 @@ def test_estimated_movement_success_and_obstacle_interrupt(monkeypatch):
 def test_speed_limited_distance_not_reported_as_completed_estimate(monkeypatch):
     calibration(monkeypatch)
     sensor, sampler, _, _, _, service = build()
-    sensor.values["f"] = 30
+    sensor.values["f"] = 22.5
     sampler.sample_once()
     result = json.loads(service._dispatch_tool("move_rover", {"direction": "forward", "distance_cm": 2}))
     assert result["status"] == "ok" and result["speed_limited"]

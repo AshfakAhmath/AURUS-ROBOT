@@ -119,7 +119,7 @@ function stopDemoAudio() {
 function renderDemo(data = {}) {
   demoActive = Boolean(data.active);
   $('showcase').textContent = demoActive ? 'Stop Demo' : 'Start FIT Expo Demo';
-  $('demo-status').textContent = `${data.stage || 'Ready'}${data.active && !data.motion_enabled ? ' · Speech only' : ''}${data.reason ? ' · ' + data.reason : ''}`;
+  $('demo-status').textContent = `${data.stage || 'Ready'}${data.active && data.sensor_bypass ? ' · Ultrasonic stops off for demo' : ''}${data.active && !data.motion_enabled ? ' · Speech only' : ''}${data.reason ? ' · ' + data.reason : ''}`;
   document.querySelectorAll('[data-audio-mode]').forEach(button => { button.disabled = demoActive; });
   if (cameraControl) renderCamera();
   updateScanButton();

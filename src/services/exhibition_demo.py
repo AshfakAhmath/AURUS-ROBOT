@@ -3,7 +3,7 @@
 import threading
 import time
 
-from src.core.models import RobotMode
+from src.core.models import RobotMode, camera_session_current
 from src.services.demo_script import DEMO_CLIPS
 
 
@@ -13,7 +13,8 @@ class ExhibitionDemo:
         self._lock = threading.RLock()
         self._cancelled = threading.Event()
         self._thread = None
-        self._state = {"active": False, "stage": "Ready", "status": "idle", "motion_enabled": False, "reason": ""}
+        self._state = {"active": False, "stage": "Ready", "status": "idle", "motion_enabled": False,
+                       "reason": "", "objects": [], "vision_status": "idle", "sensor_bypass": False}
         self._owner_sid = None
         self._motion_block_baseline = None
 
@@ -50,7 +51,8 @@ class ExhibitionDemo:
             self._cancelled = threading.Event()
             self._owner_sid = owner_sid
             self._motion_block_baseline = arbiter.get_last_blocked()
-            self._update(active=True, stage="Introduction", status="running", motion_enabled=True, reason="")
+            self._update(active=True, stage="Introduction", status="running", motion_enabled=True, reason="",
+                         objects=[], vision_status="idle", sensor_bypass=False)
             self._thread = threading.Thread(target=self._run, name="fit-expo-demo", daemon=True)
             self._thread.start()
             return True
@@ -60,8 +62,10 @@ class ExhibitionDemo:
             if not self.active:
                 return
             self._cancelled.set()
-            self._state.update(stage="Stopping", status="cancelled", reason=reason, motion_enabled=False)
+            self._state.update(stage="Stopping", status="cancelled", reason=reason, motion_enabled=False,
+                               sensor_bypass=False)
         # Stop output precedes dashboard/audio updates, and never clears E-STOP.
+        self.runtime.arbiter.set_demo_sensor_bypass(False)
         self.runtime.arbiter.halt("demo-cancelled")
         self.runtime.emit("demo_stop_audio", {})
         self._update()
@@ -79,17 +83,28 @@ class ExhibitionDemo:
         return True
 
     def _speak(self, key):
+        stages = {"introduction": "Introduction", "movement": "Greeting movements",
+                  "strafe_left": "Sliding left", "strafe_right": "Sliding right",
+                  "turn_left": "Greeting turn", "turn_right": "Greeting turn",
+                  "capabilities": "Capabilities", "closing": "Closing",
+                  "blocked": "Continuing without movement", "camera": "Live camera check"}
+        return self._say(DEMO_CLIPS[key], stages.get(key, "Live camera check"))
+
+    def _say(self, text, stage, valid_when=None):
         if not self._alive():
             return False
-        text = DEMO_CLIPS[key]
+        if valid_when is not None and not valid_when():
+            self._update(objects=[], vision_status="changed")
+            return True  # A changed camera invalidates only this line, not the demo.
         done = threading.Event()
         result = []
         def completed(success):
             result.append(success)
             done.set()
-        self._update(stage={"introduction": "Introduction", "movement": "Greeting movements", "turn_left": "Greeting turn", "turn_right": "Greeting turn", "capabilities": "Capabilities", "closing": "Closing", "blocked": "Continuing without movement"}[key])
+        self._update(stage=stage)
         self.runtime.emit("conversation", {"source": "demo", "transcript": "", "response": text, "provider": "groq-demo-tts"})
-        if not self.runtime.tts.speak_demo(text, completed, self._owner_sid, self._cancelled):
+        options = {"valid_when": valid_when} if valid_when is not None else {}
+        if not self.runtime.tts.speak_demo(text, completed, self._owner_sid, self._cancelled, **options):
             self.cancel("Demo audio could not be queued")
             return False
         deadline = time.monotonic() + 120.0
@@ -99,47 +114,41 @@ class ExhibitionDemo:
             if time.monotonic() >= deadline:
                 self.cancel("Demo audio timed out")
                 return False
+        if not self._alive():
+            return False
         if not result or not result[0]:
+            if valid_when is not None and not valid_when():
+                self._update(objects=[], vision_status="changed")
+                return self._alive()
             self.cancel(self.runtime.tts.demo_error or "Demo audio unavailable; check Groq access and speaker playback")
             return False
         return self._alive()
 
-    def _coverage(self, vx, omega):
-        arbiter = self.runtime.arbiter
-        sensors = self.runtime.sensor_sampler.get_snapshot()
-        direction = "rotation" if omega else "front" if vx > 0 else "rear"
-        strict = getattr(arbiter, "require_full_coverage", True)
-        if not sensors.valid_distances():
-            return False, "no usable ultrasonic sensor readings"
-        if strict and not sensors.coverage(center_default=arbiter.front_sensor_enabled)[direction]:
-            return False, f"{direction} sensor coverage insufficient"
-        distance = sensors.available_clearance(direction, center_default=arbiter.front_sensor_enabled)
-        if omega:
-            clearance = 60.0
-        elif vx > 0:
-            clearance = 60.0 if not strict or sensors.center_enabled(arbiter.front_sensor_enabled) else max(75.0, arbiter.degraded_caution_cm)
-        else:
-            clearance = 60.0
-        clearance = max(clearance, arbiter.caution_cm, arbiter.hard_stop_cm)
-        if distance is None and not strict:
-            return True, "unavailable sensors ignored; direction unobserved"
-        return distance >= clearance, "" if distance >= clearance else f"{direction} clearance below demo margin ({clearance:g} cm)"
+    @staticmethod
+    def _motion_scale(elapsed, duration):
+        """Smoothstep up/down with a short plateau and zero speed at both ends."""
+        ramp = duration * 0.4
+        fraction = max(0.0, min(1.0, elapsed / ramp, (duration - elapsed) / ramp))
+        return fraction * fraction * (3.0 - 2.0 * fraction)
 
-    def _motion(self, vx, omega, duration):
+    def _motion(self, vx, vy, omega, duration):
         if not self.snapshot()["motion_enabled"] or not self._alive():
             return False
         arbiter = self.runtime.arbiter
         previous_block = self._motion_block_baseline
-        deadline = time.monotonic() + duration
+        started = time.monotonic()
+        deadline = started + duration
+        # Start at zero before sending the first nonzero ramp sample.
+        if not arbiter.command("fit-expo-demo", 0.0, 0.0, 0.0, ttl=0.15, priority=40):
+            return False
+        arbiter.tick()
         reason = "Movement rejected"
         while self._alive() and time.monotonic() < deadline:
-            allowed, reason = self._coverage(vx, omega)
-            if not allowed:
-                break
             if arbiter.get_last_blocked() is not previous_block or arbiter.mode != RobotMode.PERFORMING:
                 reason = "Movement cancelled by the safety arbiter"
                 break
-            if not arbiter.command("fit-expo-demo", vx, 0.0, omega, ttl=0.15, priority=40):
+            scale = self._motion_scale(time.monotonic() - started, duration)
+            if not arbiter.command("fit-expo-demo", vx * scale, vy * scale, omega * scale, ttl=0.15, priority=40):
                 reason = "Movement command rejected"
                 break
             decision = arbiter.tick()
@@ -150,8 +159,7 @@ class ExhibitionDemo:
         else:
             # Cancellation can arrive on the final control cycle; do not
             # mistake an elapsed pulse timer for successful movement.
-            allowed, reason = self._coverage(vx, omega)
-            if (self._alive() and allowed and arbiter.get_last_blocked() is previous_block
+            if (self._alive() and arbiter.get_last_blocked() is previous_block
                     and arbiter.mode == RobotMode.PERFORMING):
                 arbiter.halt("demo-step")
                 return True
@@ -160,39 +168,87 @@ class ExhibitionDemo:
         self._update(motion_enabled=False, reason=reason)
         return False
 
+    def _observe(self):
+        """One fresh, stationary object scan; failures skip the scan and continue."""
+        self.runtime.arbiter.halt("demo-camera-check")
+        if not self._alive():
+            return False
+        vision = getattr(self.runtime, "vision", None)
+        provider = getattr(self.runtime, "groq_vision", None)
+        self._update(objects=[], vision_status="scanning", stage="Live camera check")
+        snapshot = vision.get_snapshot() if vision is not None else None
+        if snapshot is not None and not snapshot.enabled:
+            self._update(vision_status="off")
+            return self._speak("camera_off")
+        if snapshot is None or provider is None or not provider.ready:
+            self._update(vision_status="unavailable")
+            return self._speak("camera_unavailable")
+        if not self._speak("camera") or self._cancelled.wait(0.2):
+            return False
+        snapshot = vision.get_snapshot()
+        frame = vision.get_fresh_jpeg()
+        if not snapshot.enabled or not frame:
+            self._update(vision_status="unavailable")
+            return self._speak("camera_unavailable")
+        try:
+            objects = provider.detect_objects(frame)
+        except Exception:
+            objects = None
+        if not self._alive():
+            return False
+        def valid_when():
+            current = vision.get_snapshot()
+            return camera_session_current(snapshot, current) and current.age <= 1.0
+        if not valid_when():
+            self._update(vision_status="changed")
+            return self._speak("camera_changed")
+        if objects is None:
+            self._update(vision_status="error")
+            return self._speak("camera_unavailable")
+        self._update(objects=objects, vision_status="ok")
+        names = objects[:3]
+        if names:
+            listing = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+            text = f"Right now, I can see {listing}."
+            if len(objects) > 3:
+                text = f"Right now, I can see {', '.join(names)}, and more."
+        else:
+            text = DEMO_CLIPS["camera_empty"]
+        return self._say(text, "What I can see", valid_when=valid_when)
+
     def _run(self):
         try:
+            if not self.runtime.arbiter.set_demo_sensor_bypass(True):
+                self.cancel("Demo movement could not be armed")
+                return
+            self._update(sensor_bypass=True)
             if not self._speak("introduction") or not self._speak("movement"):
                 return
-            if self._motion(0.20, 0.0, 0.20):
+            if self._motion(0.20, 0.0, 0.0, 0.60):
                 if self._cancelled.wait(0.75): return
-                self._motion(-0.20, 0.0, 0.20)
+                self._motion(-0.20, 0.0, 0.0, 0.60)
             if not self._alive(): return
             if self.snapshot()["motion_enabled"]:
-                # Check rotation before announcing a turn that cannot happen.
-                allowed, reason = self._coverage(0, -0.20)
-                if not allowed:
-                    self.runtime.arbiter.halt("demo-turn-unavailable")
-                    self._update(motion_enabled=False, reason=reason)
-                else:
-                    for key, omega in (("turn_left", -0.20), ("turn_right", 0.20)):
-                        if self._cancelled.wait(0.75) or not self._speak(key): return
-                        if not self._motion(0.0, omega, 0.15): break
+                for key, vy, omega in (("strafe_left", -0.20, 0.0), ("strafe_right", 0.20, 0.0),
+                                       ("turn_left", 0.0, -0.20), ("turn_right", 0.0, 0.20)):
+                    if self._cancelled.wait(0.75) or not self._speak(key): return
+                    if not self._motion(0.0, vy, omega, 0.60): break
             if not self._alive(): return
             if not self.snapshot()["motion_enabled"] and not self._speak("blocked"):
                 return
-            if not self._speak("capabilities") or not self._speak("closing"):
+            if not self._speak("capabilities") or not self._observe() or not self._speak("closing"):
                 return
             self._update(status="completed", stage="Complete")
         except Exception as exc:
             self.cancel(f"Demo failed: {str(exc)[:150]}")
         finally:
             try:
+                self.runtime.arbiter.set_demo_sensor_bypass(False)
                 self.runtime.arbiter.halt("demo-finished")
                 if not self.runtime.arbiter.estopped and self.runtime.arbiter.mode == RobotMode.PERFORMING:
                     self.runtime.arbiter.set_mode(RobotMode.IDLE)
             finally:
                 if self._cancelled.is_set():
-                    self._update(active=False, motion_enabled=False, status="cancelled", stage="Stopped")
+                    self._update(active=False, motion_enabled=False, sensor_bypass=False, status="cancelled", stage="Stopped")
                 else:
-                    self._update(active=False, motion_enabled=False)
+                    self._update(active=False, motion_enabled=False, sensor_bypass=False)

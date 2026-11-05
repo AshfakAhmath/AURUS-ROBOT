@@ -142,8 +142,10 @@ Visit `http://PI_ADDRESS:5000`. First type a greeting to confirm the original
 normal voice. Choose Pi or PC audio before the demo, then use **Start FIT Expo
 Demo**. Speech is generated from the reviewed prototype/FIT Expo introduction,
 capabilities, greetings and closing text in `src/services/demo_script.py`.
-Each new run makes new speech requests. Short forward/reverse/turn gestures
-remain arbiter-controlled; there is no strafing. Stop Demo, E-STOP and operator
+Each new run makes new speech requests. Short forward/reverse, left/right
+strafe and turn gestures use gradual acceleration and deceleration. Demo
+gestures bypass ultrasonic distance and coverage restrictions; keep the small
+movement area clear and supervise the robot. Stop Demo, E-STOP and operator
 disconnect still cancel later actions. Press Ctrl+C to stop AURUS; keep the
 service disabled and do not run a second hardware owner concurrently.
 
@@ -216,3 +218,39 @@ Switching the camera OFF or restarting its session discards unfinished scans
 and button announcements still waiting for playback. An announcement already
 playing may finish. The face window remains a read-only display and does not
 take over dashboard controls.
+
+## 8. Refined demo and MCP clearance margins
+
+Transfer the reviewed code, restart the manual AURUS process and hard-refresh
+the dashboard and face display. No `.env` edit, dependency installation or
+sensor disabling is required. Secure the wheels before using the new strafes.
+
+The demo gestures each last 0.6 seconds with a peak requested axis value of
+0.20, smoothly ramping from zero and back to zero. Existing motor scaling and
+strafe compensation still apply; this is a speed command, not a distance
+guarantee. Normal completion decelerates; operator stops act immediately.
+The dashboard explicitly shows **Ultrasonic stops off for demo** while armed.
+Manual and Explore continue using their existing sensor protection.
+
+After the gestures and capabilities line, AURUS remains stationary, takes a
+fresh camera frame, identifies visible objects and speaks a brief live result
+through the same Groq demo voice and face captions. Camera OFF, no fresh frame,
+network/model failure or a changed camera session skips that result and allows
+the closing to continue. Switching the camera OFF during synthesis discards
+an object line that has not started playback; audio already playing can finish.
+Stop/E-STOP during a vision request stops motors immediately and discards its
+late result. The in-flight request may finish before the demo worker exits.
+
+MCP moves, spins and animations (dashboard and standalone server) stop below
+20 cm and slow from 20 to below 25 cm. They do not use the old 35 cm caution or
+45/75 cm degraded-front distance margins. Sensor coverage still follows
+`AURUS_REQUIRE_FULL_SENSOR_COVERAGE`; all readings unavailable still stops MCP.
+Explicit stop, E-STOP, disconnect and command time limits remain enforced.
+Do not run the standalone MCP server together with the main hardware runtime.
+
+Before presenting, test one full demo with clear space, then Stop Demo and
+E-STOP during separate runs. Confirm strafes are brief, speed rises/falls
+gradually, and the live object line matches a visible prop. Check an MCP command
+at a measured 30 cm, 22–24 cm and below 20 cm to confirm normal, reduced and
+stopped output respectively. Physical motor smoothness and stopping distance
+must be checked on the Pi; automated tests use simulated devices only.
