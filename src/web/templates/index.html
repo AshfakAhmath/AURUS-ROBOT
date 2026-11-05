@@ -69,6 +69,7 @@
             <span id="connection" class="pill bad"><i></i> Offline</span>
             <span id="mode" class="pill mode-pill">Idle</span>
           </div>
+          <a class="button ghost-button face-link" href="{{ url_for('face_display') }}" target="_blank" rel="noopener">Open Face Display</a>
           <button id="clear-estop" class="button ghost-button">Clear E-stop</button>
           <button id="estop" class="button estop"><span class="stop-icon"></span>Emergency stop</button>
         </div>
@@ -115,6 +116,14 @@
             </div>
             <div class="progress"><div id="enroll-progress"></div></div>
             <p id="enroll-label" class="muted">Enrollment idle</p>
+          </div>
+          <div class="object-detection">
+            <div>
+              <h3>Object detection</h3>
+              <p id="object-status" role="status">Hold an object in front of the camera to scan it.</p>
+            </div>
+            <button id="detect-objects" class="button ghost-button" type="button" disabled>Detect Objects</button>
+            <ul id="detected-objects" aria-label="Detected objects" hidden></ul>
           </div>
         </section>
 

@@ -63,6 +63,7 @@ class TTSService:
     ):
         self.piper_model = Path(piper_model) if piper_model else None
         self.playback_active = playback_active or threading.Event()
+        self.local_playback_active = threading.Event()
         self.voice = voice or os.getenv("AURUS_TTS_VOICE", "en-US-GuyNeural")
         configured_volume = (
             volume_percent
@@ -305,17 +306,24 @@ class TTSService:
     # Local playback helpers
     # ------------------------------------------------------------------
 
+    def _play_locally(self, player: Callable[..., Any], *args, **kwargs) -> None:
+        self.local_playback_active.set()
+        try:
+            player(*args, **kwargs)
+        finally:
+            self.local_playback_active.clear()
+
     def _play_wav(self, path: str) -> None:
         if shutil.which("aplay"):
             command = ["aplay", "-q"]
             if self.playback_device:
                 command.extend(["-D", self.playback_device])
             command.append(path)
-            subprocess.run(command, check=True, timeout=30)
+            self._play_locally(subprocess.run, command, check=True, timeout=30)
         elif os.name == "nt":
             import winsound
 
-            winsound.PlaySound(path, winsound.SND_FILENAME)
+            self._play_locally(winsound.PlaySound, path, winsound.SND_FILENAME)
         else:
             raise RuntimeError("no WAV player available")
 
@@ -411,24 +419,17 @@ class TTSService:
     def _play_mp3_locally(self, player: str | None, path: str) -> None:
         """Play an MP3 file through the Pi's local speaker."""
         if player == "mpg123":
-            subprocess.run(["mpg123", "-q", path], check=True, timeout=30)
+            command = ["mpg123", "-q", path]
         elif player == "ffplay":
-            subprocess.run(
-                [
-                    "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
-                    "-af", f"volume={self.gain_db}dB", path,
-                ],
-                check=True,
-                timeout=30,
-            )
+            command = [
+                "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
+                "-af", f"volume={self.gain_db}dB", path,
+            ]
         elif player == "mplayer":
-            subprocess.run(
-                ["mplayer", "-really-quiet", "-af", f"volume={self.gain_db}", path],
-                check=True,
-                timeout=30,
-            )
+            command = ["mplayer", "-really-quiet", "-af", f"volume={self.gain_db}", path]
         else:
             raise RuntimeError("edge-tts generated audio but no MP3 player is installed")
+        self._play_locally(subprocess.run, command, check=True, timeout=30)
 
     # ------------------------------------------------------------------
     # Unified play-or-stream dispatcher
@@ -478,7 +479,9 @@ class TTSService:
                 self._speak_espeak_to_file(text)
             else:
                 amplitude = max(0, min(200, 100 + self.volume_percent))
-                subprocess.run([self.backend, "-a", str(amplitude), text], check=True, timeout=30)
+                self._play_locally(
+                    subprocess.run, [self.backend, "-a", str(amplitude), text], check=True, timeout=30,
+                )
                 self.active_output = "pi"
 
     def _speak_espeak_to_file(self, text: str) -> None:

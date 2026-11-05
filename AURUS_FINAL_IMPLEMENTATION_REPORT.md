@@ -1192,3 +1192,55 @@ No Pi deployment, service change, private key/`.env` edit, commit or push was
 performed. Hardware driver release/reconnection, actual CPU/temperature benefit
 and physical Explore stopping remain Pi/operator checks. See the manual setup
 guide's camera section after deliberately transferring the reviewed changes.
+
+## U. Main-Branch Synchronization and Exhibition Integration — 2026-11-05
+
+The operator's push was rejected because the remote main branch had advanced.
+The clean laptop branch contained camera-control commit
+`e76c9d74660366934dc0a144b6adad7399093fcf`, while fetched `origin/main` contained
+`fd106d4025a97c9b2aab72ae62b38bd1da263818` (AURUS FEATURES 6). Both descended
+from `6be1742`; neither commit was discarded or force-pushed.
+
+Created local recovery branch `recovery/main-before-sync-e76c9d7` before merging.
+The remote adds the read-only exhibition face display, object detection,
+speech/playback activity tracking, updated vision defaults, submission material
+and screenshots. These are retained alongside the existing camera controls.
+The only textual merge conflict was in dashboard renderDemo: both camera-state
+rendering and object-scan button updates are required and were preserved.
+
+Integration also connects the new object-scanning path to camera control:
+
+- Backend scans reject camera OFF and discard results crossing an OFF/ON
+  generation change; fresh JPEG access checks the enabled/current session.
+- The dashboard disables scanning until the camera is ready, clears object
+  labels and invalidates pending callbacks when the camera stops or changes
+  session, and preserves the incoming face-display link.
+- Existing normal/demo speech, camera-worker ownership, sensor collision policy
+  and the new face-expression/playback behavior retain their regression checks.
+
+Manual integration changes: `src/runtime.py`, `src/services/vision_service.py`,
+`src/web/static/js/evaluation.js`, `tests/test_camera_control.py` and this report.
+Other incoming files, including the Submission archive source snapshots, were
+merged as provided; the submission builder and hardware diagnostic scripts were
+not executed. The backup branch retains the operator's exact pre-merge commit.
+
+Verification:
+
+- `python -m pytest -q -rs`: **256 passed, 0 failed, 2 skipped**, 11.75 seconds.
+  The two skips remain unavailable-OpenCV cases. The existing pytest-asyncio
+  loop-scope deprecation warning remains.
+- JavaScript syntax checks passed for dashboard and face-display scripts;
+  source compilation passed.
+- **27 isolated browser checks passed**, covering the camera controls and
+  reconnect behavior plus the face link, disabled object scans, rejection of
+  old callbacks and display of current object results. All UI events were
+  simulated; no robot, real camera or API was connected.
+- Merge conflict-marker, source parsing and diff-whitespace checks completed
+  before finishing the merge. The private `.env` was not changed or staged.
+  The resolution files pass the whitespace check; incoming submission snapshots
+  and some CRLF additions retain whitespace warnings already present in the
+  collaborator's commit. Those unrelated files were not reformatted.
+
+No force update, history reset, Pi deployment, service operation, physical
+hardware test or live Groq request was performed. This integration addresses
+the ordinary non-fast-forward push while preserving both development histories.

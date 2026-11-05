@@ -3,11 +3,13 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from run import ProcessOwner, is_reclaimable_owner
 from src.core.models import IdentityResult, MotionCommand, RobotMode, SensorSnapshot, VisionSnapshot
@@ -824,6 +826,131 @@ class WebAdapterTests(unittest.TestCase):
         errors = [event for event in client.get_received() if event["name"] == "command_error"]
         self.assertEqual(len(errors), 1)
         client.disconnect()
+
+
+@pytest.fixture
+def expo_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.delenv("GROQ_VISION_MODEL", raising=False)
+    runtime = RobotRuntime(tmp_path)
+    runtime.vision._snapshot = VisionSnapshot(timestamp=time.monotonic(), healthy=True)
+    runtime.vision._jpeg = b"current-frame"
+    return runtime
+
+
+def test_face_display_is_read_only_and_does_not_claim_operator_connection(expo_runtime):
+    app, _, _, _ = create_app(expo_runtime)
+    client = app.test_client()
+    face = client.get("/face")
+    assert face.status_code == 200
+    assert b"AURUS Face Display" in face.data
+    assert b"face.js" in face.data and b"socket.io" not in face.data
+    assert b"Emergency stop</button>" not in face.data
+    assert b'href="/face"' in client.get("/").data
+
+    state = client.get("/face/state")
+    assert state.json == {"expression": "idle"}
+    assert state.cache_control.no_store
+    assert client.post("/face/state").status_code == 405
+    assert expo_runtime._demo_dashboard_sid is None
+
+
+def test_face_tracks_capture_processing_and_speech_with_estop_priority(expo_runtime):
+    app, _, _, _ = create_app(expo_runtime)
+    client = app.test_client()
+
+    def expression():
+        return client.get("/face/state").json["expression"]
+
+    expo_runtime.arbiter.set_mode(RobotMode.LISTENING)
+    assert expression() == "listening"
+    expo_runtime.speech._processing = True
+    assert expression() == "thinking"
+    expo_runtime.speech.browser_playback_active.set()
+    assert expression() == "speaking"
+    expo_runtime.arbiter.emergency_stop()
+    assert expression() == "estop"
+
+
+def test_local_playback_sets_speaking_and_clears_it_when_the_player_fails(expo_runtime):
+    tts = expo_runtime.tts
+    tts.playback_active.set()
+    assert expo_runtime.face_expression() == "thinking"
+
+    def fail_playback(*_args, **_kwargs):
+        assert expo_runtime.face_expression() == "speaking"
+        raise OSError("speaker unavailable")
+
+    with patch("src.services.tts_service.shutil.which", return_value="aplay"), patch(
+        "src.services.tts_service.subprocess.run", side_effect=fail_playback
+    ):
+        with pytest.raises(OSError, match="speaker unavailable"):
+            tts._play_wav("speech.wav")
+    assert expo_runtime.face_expression() == "thinking"
+
+
+def mock_object_completion(runtime, content):
+    create = Mock(return_value=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))]))
+    runtime.groq_vision._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    return create
+
+
+def test_operator_scan_identifies_objects_from_the_current_frame(expo_runtime):
+    create = mock_object_completion(expo_runtime, '{"objects":[" Red mug ","red mug","Notebook"]}')
+    app, socketio, _, _ = create_app(expo_runtime)
+    operator = socketio.test_client(app)
+    other = socketio.test_client(app)
+    other.get_received()
+    result = operator.emit("detect_objects", callback=True)
+    assert result == {"status": "ok", "objects": ["Red mug", "Notebook"], "message": "I see Red mug, Notebook."}
+    assert not other.get_received()
+    request = create.call_args.kwargs
+    assert request["model"] == "qwen/qwen3.8-27b"
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["messages"][0]["content"][1]["image_url"]["url"] == "data:image/jpeg;base64,Y3VycmVudC1mcmFtZQ=="
+    operator.disconnect()
+    other.disconnect()
+
+
+@pytest.mark.parametrize("content,status", [(' {"objects": []} ', "ok"), ('{"objects":[42]}', "error")])
+def test_object_scan_distinguishes_empty_detection_from_invalid_output(expo_runtime, content, status):
+    mock_object_completion(expo_runtime, content)
+    result = expo_runtime.detect_objects()
+    assert result["status"] == status
+    assert result["objects"] == []
+
+
+def test_object_scan_refuses_stale_camera_data(expo_runtime):
+    create = mock_object_completion(expo_runtime, '{"objects":["mug"]}')
+    expo_runtime.vision._snapshot = VisionSnapshot(timestamp=time.monotonic() - 2, healthy=True)
+    result = expo_runtime.detect_objects()
+    assert result["status"] == "error"
+    assert "fresh camera" in result["message"]
+    create.assert_not_called()
+
+
+def test_inflight_object_scan_blocks_a_second_scan_and_showcase(expo_runtime):
+    expo_runtime.tts.prepare_demo_speech = Mock(return_value=True)
+    expo_runtime.demo._run = Mock()
+    create = mock_object_completion(expo_runtime, '{"objects":["mug"]}')
+    completion = create.return_value
+
+    def scan_in_progress(**_kwargs):
+        assert expo_runtime.face_expression() == "thinking"
+        assert "already running" in expo_runtime.detect_objects()["message"]
+        assert not expo_runtime.start_exhibition_demo("operator")
+        return completion
+
+    create.side_effect = scan_in_progress
+    assert expo_runtime.detect_objects()["objects"] == ["mug"]
+    assert expo_runtime.face_expression() == "idle"
+
+
+def test_voice_object_command_announces_detected_objects(expo_runtime):
+    mock_object_completion(expo_runtime, '{"objects":["water bottle"]}')
+    result = expo_runtime.handle_text("Identify this object", source="voice")
+    assert result["provider"] == "groq-vision"
+    assert result["response"] == "I see water bottle."
 
 
 if __name__ == "__main__":

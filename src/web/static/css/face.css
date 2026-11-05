@@ -1,0 +1,118 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: #071218;
+  color: #e9f9fb;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+
+.display {
+  --glow: #77fbe1;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: clamp(16px, 4vmin, 52px) clamp(20px, 5vmin, 72px);
+  background: radial-gradient(ellipse at 50% 50%, #14363e 0%, #0a1b25 49%, #071218 78%);
+}
+
+.display-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #b0eaf327;
+}
+
+.display-header h1, .display-live {
+  margin: 0;
+  font-size: clamp(11px, 1.8vmin, 20px);
+  letter-spacing: .21em;
+}
+
+.display-header h1 span { color: #92acb8; font-weight: 400; }
+.display-live { color: var(--glow); text-transform: uppercase; }
+.display-live::before { content: "●"; margin-right: .55em; }
+
+.face-stage { display: grid; place-items: center; padding: 4vmin 0; }
+
+.visor {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 5vmin;
+  width: min(82vw, 110vh, 1120px);
+  aspect-ratio: 2.15;
+  border: 1px solid #a1f9f149;
+  border-radius: 22% / 45%;
+  background: radial-gradient(ellipse at 50% 8%, #15313b, #0a1722 68%);
+  box-shadow: 0 0 0 1vmin #08151de0, 0 0 0 calc(1vmin + 1px) #a1f9f12c, 0 3vmin 9vmin #030d14b0;
+}
+
+.eyes { display: flex; align-items: center; gap: clamp(36px, 14vmin, 170px); }
+
+.eye {
+  width: clamp(29px, 10vmin, 130px);
+  height: clamp(40px, 15vmin, 180px);
+  border-radius: 40%;
+  background: var(--glow);
+  box-shadow: 0 0 3vmin color-mix(in srgb, var(--glow) 58%, transparent);
+  transition: background .2s, border-radius .2s, transform .22s;
+}
+
+.mouth {
+  width: clamp(28px, 10vmin, 120px);
+  height: clamp(12px, 4.4vmin, 51px);
+  border: clamp(3px, .72vmin, 9px) solid var(--glow);
+  border-top: 0;
+  border-radius: 0 0 60% 60%;
+  transition: border-radius .2s, transform .2s;
+}
+
+.display-footer { display: grid; justify-items: center; gap: 1vmin; }
+.display-footer p { margin: 0; font-size: clamp(18px, 4vmin, 42px); font-weight: 550; letter-spacing: .015em; }
+.expression-indicator { width: 3vmin; min-width: 18px; height: 3px; border-radius: 9px; background: var(--glow); }
+
+[data-expression="idle"] .eye { animation: blink 6s infinite; }
+[data-expression="listening"] { --glow: #78dfff; }
+[data-expression="listening"] .eye { border-radius: 47%; transform: scale(1.12); }
+[data-expression="listening"] .mouth { border-top: .72vmin solid; border-radius: 50%; transform: scale(.36, .62); }
+[data-expression="thinking"] { --glow: #b4afff; }
+[data-expression="thinking"] .eye { animation: look 2s ease-in-out infinite alternate; }
+[data-expression="thinking"] .mouth { border-radius: 8px; transform: scale(.72, .18); }
+[data-expression="speaking"] .mouth { border: 0; border-radius: 50%; background: var(--glow); animation: talk .52s ease-in-out infinite; }
+[data-expression="performing"] { --glow: #ffcb7c; }
+[data-expression="performing"] .eye { border-radius: 60% 60% 35% 35%; transform: scaleY(.62); }
+[data-expression="performing"] .mouth { transform: scale(1.35, 1.25); }
+[data-expression="exploring"] { --glow: #b6f88e; }
+[data-expression="exploring"] .eye { animation: look 3s ease-in-out infinite alternate; }
+[data-expression="estop"] { --glow: #ff989d; }
+[data-expression="estop"] .eye { border-radius: 25%; transform: scaleY(.42); }
+[data-expression="estop"] .mouth { border-radius: 8px; transform: scaleY(.14); }
+[data-expression="offline"] { --glow: #829ba5; }
+[data-expression="offline"] .eye { transform: scaleY(.19); }
+[data-expression="offline"] .mouth { opacity: .35; }
+
+@keyframes blink {
+  0%, 45%, 51%, 100% { transform: scaleY(1); }
+  48% { transform: scaleY(.1); }
+}
+
+@keyframes look {
+  from { transform: translateX(-1.1vmin) scaleY(.76); }
+  to { transform: translateX(1.1vmin) scaleY(.92); }
+}
+
+@keyframes talk {
+  0%, 100% { transform: scale(1.18, .38); }
+  42% { transform: scale(.82, 1.16); }
+  72% { transform: scale(1.02, .66); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eye, .mouth { animation: none !important; transition: none; }
+}

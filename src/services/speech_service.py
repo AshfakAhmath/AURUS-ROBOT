@@ -381,6 +381,11 @@ class SpeechService:
             )
 
     @property
+    def processing(self) -> bool:
+        with self._lock:
+            return self._processing
+
+    @property
     def wake_gate_passed(self) -> bool:
         """Compatibility health flag: model readiness replaces the old trial counter."""
         return self._keyword_engine is not None

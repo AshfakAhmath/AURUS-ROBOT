@@ -140,6 +140,13 @@ class VisionService:
         with self._lock:
             return self._jpeg
 
+    def get_fresh_jpeg(self) -> bytes | None:
+        with self._lock:
+            if (self._enabled and self._snapshot.healthy and self._snapshot.age <= 1.0
+                    and self._snapshot.generation == self._generation):
+                return self._jpeg
+            return None
+
     def _configure_models(self) -> None:
         if cv2 is None:
             raise RuntimeError("OpenCV is not installed")

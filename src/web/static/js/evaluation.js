@@ -8,6 +8,7 @@ let browserAudioCount = 0;
 let sensorControlAuthorized = false;
 let browserMicActive = false;
 let demoActive = false;
+let pendingObjectScan = null;
 const demoAudio = new Set();
 let cameraConnected = false;
 let cameraControl = null;
@@ -18,6 +19,7 @@ const $ = (id) => document.getElementById(id);
 const fmtDistance = (value) => value != null && Number.isFinite(Number(value)) ? `${Number(value).toFixed(0)} cm` : 'N/A';
 
 function renderCamera(data = {}) {
+  const previousGeneration = cameraControl?.generation;
   if (cameraControl && data.generation != null && cameraControl.generation != null && data.generation < cameraControl.generation) data = {};
   cameraControl = {...(cameraControl || {}), ...data};
   const enabled = cameraControl.enabled !== false;
@@ -58,6 +60,14 @@ function renderCamera(data = {}) {
   $('remember').disabled = !ready || demoActive;
   document.querySelectorAll('[data-mode="exploring"]').forEach(button => { button.disabled = !known || !enabled; });
   if (!enabled) $('vision-backend').textContent = 'Disabled';
+  if (!ready || previousGeneration !== cameraControl.generation) {
+    pendingObjectScan = null;
+    $('detected-objects').replaceChildren();
+    $('detected-objects').hidden = true;
+    $('object-status').textContent = !enabled ? 'Camera is switched off. Turn it on to scan objects.'
+      : ready ? 'Hold an object in front of the camera to scan it.' : 'Waiting for a fresh camera image.';
+  }
+  updateScanButton();
 }
 
 socket.on('connect', () => {
@@ -70,6 +80,7 @@ socket.on('connect', () => {
   renderCamera({state: 'starting'});
   $('connection').innerHTML = '<i></i> Connected';
   $('connection').className = 'pill good';
+  updateScanButton();
 });
 socket.on('disconnect', () => {
   cameraConnected = false;
@@ -82,6 +93,9 @@ socket.on('disconnect', () => {
   endDrive();
   $('connection').innerHTML = '<i></i> Offline';
   $('connection').className = 'pill bad';
+  if (pendingObjectScan) $('object-status').textContent = 'Connection lost during the scan. Reconnect to retry.';
+  pendingObjectScan = null;
+  updateScanButton();
 });
 socket.on('command_error', ({message}) => {
   $('error').textContent = message;
@@ -108,6 +122,43 @@ function renderDemo(data = {}) {
   $('demo-status').textContent = `${data.stage || 'Ready'}${data.active && !data.motion_enabled ? ' · Speech only' : ''}${data.reason ? ' · ' + data.reason : ''}`;
   document.querySelectorAll('[data-audio-mode]').forEach(button => { button.disabled = demoActive; });
   if (cameraControl) renderCamera();
+  updateScanButton();
+}
+
+function updateScanButton() {
+  $('detect-objects').disabled = !socket.connected || !cameraControl?.enabled || cameraControl.state !== 'on'
+    || demoActive || pendingObjectScan !== null;
+}
+
+function scanObjects() {
+  if ($('detect-objects').disabled) return;
+  const scan = Symbol();
+  pendingObjectScan = scan;
+  updateScanButton();
+  const list = $('detected-objects');
+  list.replaceChildren();
+  list.hidden = true;
+  $('object-status').textContent = 'Scanning the current camera frame…';
+  socket.timeout(40000).emit('detect_objects', {}, (error, result) => {
+    if (pendingObjectScan !== scan) return;
+    pendingObjectScan = null;
+    updateScanButton();
+    if (error || !result) {
+      $('object-status').textContent = 'No scan result received. Check the connection and try again.';
+      return;
+    }
+    if (result.status !== 'ok' || !result.objects.length) {
+      $('object-status').textContent = result.message;
+      return;
+    }
+    for (const label of result.objects) {
+      const item = document.createElement('li');
+      item.textContent = label;
+      list.append(item);
+    }
+    list.hidden = false;
+    $('object-status').textContent = result.objects.length === 1 ? '1 object identified' : `${result.objects.length} objects identified`;
+  });
 }
 socket.on('sensor_configuration', renderSensorControl);
 socket.on('sensor_control_authorized', ({authorized}) => {
@@ -555,6 +606,7 @@ $('showcase').onclick = () => {
   socket.emit(demoActive ? 'stop_showcase' : 'perform_showcase', {});
 };
 $('enroll').onclick = () => socket.emit('enroll_person', {name: $('enroll-name').value.trim()});
+$('detect-objects').onclick = scanObjects;
 $('remember').onclick = () => socket.emit('remember_fact', {text: $('fact').value.trim()});
 document.querySelectorAll('[data-mode]').forEach(btn => btn.onclick = () => socket.emit('set_mode', {mode: btn.dataset.mode}));
 document.querySelectorAll('[data-audio-mode]').forEach(btn => {

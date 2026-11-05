@@ -105,6 +105,7 @@ def runtime_for(vision):
     runtime = object.__new__(RobotRuntime)
     runtime._lock = threading.RLock()
     runtime._last_manual_sequence = -1
+    runtime._object_scan = threading.Lock()
     runtime.vision = vision
     runtime.identity = vision.identity_service
     runtime.sensor_sampler, runtime.driver, runtime.arbiter = sampler, driver, arbiter
@@ -285,6 +286,26 @@ def test_mcp_camera_tool_rejects_off_and_discards_late_result(vision):
     runtime.groq_vision.describe.side_effect = describe
     result = json.loads(agent._dispatch_tool('capture_image', {}))
     assert result['status'] == 'error' and 'STALE_PERSON' not in str(result)
+
+
+def test_object_scan_respects_camera_off_and_discards_old_session(vision):
+    runtime = runtime_for(vision)
+    runtime.groq_vision = Mock(ready=True)
+    runtime.set_camera_enabled(False)
+    result = runtime.detect_objects()
+    assert result['status'] == 'error' and 'switched off' in result['message']
+    runtime.groq_vision.detect_objects.assert_not_called()
+    runtime.set_camera_enabled(True)
+    fresh_snapshot(vision)
+    def detect(_jpeg):
+        runtime.set_camera_enabled(False)
+        runtime.set_camera_enabled(True)
+        fresh_snapshot(vision)
+        return ['STALE_OBJECT']
+    runtime.groq_vision.detect_objects.side_effect = detect
+    result = runtime.detect_objects()
+    assert result['status'] == 'error' and not result['objects']
+    assert 'STALE_OBJECT' not in str(result)
 
 
 def test_late_greeting_from_previous_camera_session_is_discarded(vision):
