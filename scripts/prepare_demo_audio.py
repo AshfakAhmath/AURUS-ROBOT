@@ -1,6 +1,6 @@
 """Generate cloud neural FIT Expo narration and master it for small speakers.
 
-Build-time only: edge-tts plus FFmpeg (PATH, --ffmpeg, or imageio-ffmpeg).
+Build-time only: edge-tts or Groq plus FFmpeg (PATH, --ffmpeg, or imageio-ffmpeg).
 Replay on the Pi uses the prepared PCM WAV cache without these build tools.
 There is deliberately no local-synthesis fallback.
 """
@@ -106,19 +106,29 @@ def write_wav(path, rate, frames):
 
 
 async def prepare(args, ffmpeg):
-    try:
-        import edge_tts
-    except ImportError:
-        raise RuntimeError("Install the existing edge-tts dependency in the audio preparation environment") from None
+    groq_speech = None
+    if args.provider == "groq":
+        from src.services.groq_tts_service import GroqSpeechSynthesizer
+        groq_speech = GroqSpeechSynthesizer(model=args.model, voice=args.voice)
+        if not groq_speech.ready:
+            raise RuntimeError(groq_speech.error)
+    else:
+        try:
+            import edge_tts
+        except ImportError:
+            raise RuntimeError("Install the existing edge-tts dependency in the audio preparation environment") from None
     destination = ROOT / "assets" / "fit_expo"
     manifest = {
-        "engine": "Microsoft Edge online neural TTS", "voice": args.voice, "rate": args.rate,
+        "engine": "Groq Orpheus online neural TTS" if groq_speech else "Microsoft Edge online neural TTS",
+        "voice": args.voice, "rate": "natural" if groq_speech else args.rate,
         "mastering": {"target_lufs": TARGET_LUFS, "loudness_tolerance_lu": LOUDNESS_TOLERANCE_LU,
                       "true_peak_limit_dbtp": TRUE_PEAK_DBTP,
                       "loudness_range_lu": 5, "filters": SPEECH_FILTERS,
                       "final_limiter": FINAL_LIMITER, "normalization": "two-pass EBU R128"},
         "clips": {},
     }
+    if groq_speech:
+        manifest["model"] = groq_speech.model
     # Prepare and verify everything before replacing any working cache files.
     with tempfile.TemporaryDirectory(prefix="aurus-cloud-demo-") as scratch:
         scratch = Path(scratch)
@@ -129,9 +139,10 @@ async def prepare(args, ffmpeg):
             previous = destination / (key + ".wav")
             previous_level = float(analyse(ffmpeg, previous)["input_i"]) if previous.exists() else None
             spoken = text.replace("FIT Expo", "F. I. T. Expo").replace("Groq-powered", "Grock powered").replace("TechTitans", "Tech Titans")
-            raw = scratch / (key + ".mp3")
-            source_key = hashlib.sha256(json.dumps([spoken, args.voice, args.rate]).encode()).hexdigest()
-            cached_source = source_cache / (source_key + ".mp3")
+            extension = ".wav" if groq_speech else ".mp3"
+            raw = scratch / (key + "-source" + extension)
+            source_key = hashlib.sha256(json.dumps([args.provider, args.model if groq_speech else "", spoken, args.voice, manifest["rate"]]).encode()).hexdigest()
+            cached_source = source_cache / (source_key + extension)
             if cached_source.is_file():
                 print(f"Reusing cloud source: {key}", flush=True)
                 shutil.copyfile(cached_source, raw)
@@ -139,7 +150,10 @@ async def prepare(args, ffmpeg):
                 print(f"Generating cloud voice: {key}", flush=True)
                 for attempt in range(3):
                     try:
-                        await edge_tts.Communicate(spoken, args.voice, rate=args.rate, volume="+0%", receive_timeout=45).save(str(raw))
+                        if groq_speech:
+                            await asyncio.to_thread(groq_speech.synthesize, spoken, raw)
+                        else:
+                            await edge_tts.Communicate(spoken, args.voice, rate=args.rate, volume="+0%", receive_timeout=45).save(str(raw))
                         break
                     except Exception:
                         if attempt == 2:
@@ -172,11 +186,16 @@ async def prepare(args, ffmpeg):
 
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--voice", default="en-US-GuyNeural")
+    parser.add_argument("--provider", choices=("edge", "groq"), default="edge")
+    parser.add_argument("--voice", default=None)
+    parser.add_argument("--model", default="canopylabs/orpheus-v1-english")
     parser.add_argument("--rate", default="-8%")
     parser.add_argument("--ffmpeg", help="Optional FFmpeg executable path")
     args = parser.parse_args()
+    args.voice = args.voice or ("troy" if args.provider == "groq" else "en-US-GuyNeural")
     asyncio.run(prepare(args, ffmpeg_path(args.ffmpeg)))
 
 

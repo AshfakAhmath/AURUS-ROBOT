@@ -615,6 +615,7 @@ class RobotRuntime:
             "tts_backend": self.tts.backend,
             "tts_error": self.tts.error,
             "tts_voice": self.tts.voice,
+            "tts_model": self.tts.model_name,
             "tts_playback_device": self.tts.playback_device or "default",
             "tts_volume_percent": self.tts.volume_percent,
             "tts_gain_db": self.tts.gain_db,

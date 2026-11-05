@@ -55,8 +55,8 @@ def demo_harness():
 def test_recording_script_and_audio_are_cached_valid_and_unclipped():
     clips = DemoAudioCache(ASSETS).validate()
     manifest = json.loads((ASSETS / "manifest.json").read_text())
-    assert manifest["engine"] == "Microsoft Edge online neural TTS"
-    assert manifest["voice"] == "en-US-GuyNeural"
+    assert manifest["engine"] in ("Microsoft Edge online neural TTS", "Groq Orpheus online neural TTS")
+    assert manifest["voice"]
     assert manifest["mastering"]["target_lufs"] == -12
     assert "Please ask them" not in DEMO_CLIPS["closing"]
     assert "FIT Expo" in DEMO_CLIPS["closing"]

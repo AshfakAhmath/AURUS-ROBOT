@@ -48,12 +48,27 @@ Optional voice/rate/executable settings:
 
     python scripts/prepare_demo_audio.py --voice en-US-GuyNeural --rate=-8% --ffmpeg PATH_TO_FFMPEG
 
+To prepare replacement clips with Groq Orpheus English and the Troy voice,
+put a new private Groq key in the build environment's `.env`, confirm model
+access in Groq Console, and run:
+
+    python scripts/prepare_demo_audio.py --provider groq --voice troy
+
+This uses `canopylabs/orpheus-v1-english`, splits input at the documented
+200-character limit, and applies the same mastering and validation. It consumes
+Groq quota during preparation. The shipped audio and measurements above still
+refer to the existing Microsoft Guy cache; it has not been regenerated with
+Groq. Listen to the new preview before deploying the complete replacement folder.
+The Pi's `AURUS_TTS_BACKEND=groq` setting selects ordinary live speech only;
+it does not replace or resynthesize this prerecorded demo.
+
 The public script text is sent to the online TTS service. There is no local
 voice fallback. Successful cloud source recordings are cached in the temporary
-directory by text/voice/rate hash for remastering without repeated API requests.
+directory by provider/model/text/voice/rate hash for remastering without repeated API requests.
 All new clips are prepared and validated before the working cache is replaced.
 The manifest is published last; an interrupted update cannot look valid.
 No playback or robot hardware initialization occurs during preparation.
 
 Sources: [Edge TTS client](https://github.com/rany2/edge-tts),
+[Groq Orpheus speech](https://console.groq.com/docs/text-to-speech/orpheus),
 [FFmpeg audio filters](https://ffmpeg.org/ffmpeg-filters.html).

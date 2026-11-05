@@ -2,11 +2,12 @@
 
 Date: 2026-11-04 (Asia/Colombo). Implementation and simulation tests only.
 
-**Current behavior update, 2026-11-05:** Sections O and P supersede the earlier
-local-voice and mandatory-full-coverage descriptions. The demo now replays
-cloud-generated neural audio. Runtime movement uses remaining valid sensors by
-default; partial coverage is a warning, and strict coverage is opt-in. The
-earlier sections retain the implementation/recovery history for prior revisions.
+**Current behavior update, 2026-11-05:** Sections O, P and Q supersede the earlier
+local-voice and mandatory-full-coverage descriptions. The demo replays prepared
+cloud neural audio offline. Ordinary speech can explicitly select Groq Orpheus
+English with the Troy voice. Runtime movement uses remaining valid sensors by
+default; partial coverage is a warning, and strict coverage is opt-in. Earlier
+sections retain implementation/recovery history for prior revisions.
 
 ## A. Overview
 
@@ -839,3 +840,94 @@ driver configuration or API key was changed. No Pi deployment, physical motor
 operation, commit or push was performed. Restart a manually launched application
 after deliberately transferring the reviewed code/assets so the new environment
 policy is loaded. The earlier manual-start preference is preserved.
+
+## Q. Groq Orpheus Speech Integration — 2026-11-05
+
+This follow-up started on `main` at clean commit
+`46359db6e1109d07433118edf3c91ed8d6e65235`. It adds explicit Groq speech selection
+without changing sensor/motor policy, hardware pins or the installed Pi service.
+
+```dotenv
+AURUS_TTS_BACKEND=groq
+GROQ_TTS_MODEL=canopylabs/orpheus-v1-english
+GROQ_TTS_VOICE=troy
+AURUS_TTS_VOLUME_PERCENT=0
+AURUS_TTS_GAIN_DB=6
+```
+
+Groq's documented English Orpheus API supports WAV output, six English voices
+and at most 200 input characters per request. The new adapter splits longer
+text at sentence/word boundaries, validates 16-bit PCM responses, and joins
+compatible chunks with a short pause before playback. Raw SDK errors, API keys
+and user input are excluded from adapter error messages. Account/model access,
+rate/quota and audio-format errors produce actionable messages.
+
+Explicit `groq` overrides an installed Piper model. It stays selected after a
+failed request, reports degraded health and permits a subsequent retry; it
+does not unexpectedly switch to local speech or replay partial text. Missing
+key/SDK or invalid voice/model prevents ordinary speech from being queued.
+Unset/`auto` retains the previous provider-selection behavior. The existing
+queue, playback suppression event and Pi/browser/auto WAV routing are reused.
+The runtime health includes the selected speech model. Gain is limited against
+the PCM peak with 1 dB sample headroom rather than blindly clipping at large
+boost settings. This does not prove acoustic loudness on the real speaker.
+
+The FIT Expo demo still uses the already-supplied **Microsoft Guy neural WAV
+cache** offline. No WAV files or manifest were replaced in this change, and
+cached replay makes no Groq calls or additional runtime amplification. The
+preparation script now optionally supports `--provider groq --voice troy` with
+the same loudness mastering, validation and staged publication. Its cloud
+source-cache identity includes provider/model. A failed generation leaves the
+working cache in place. New Groq demo clips have **not** been synthesized here;
+their duration, loudness and room audibility require a deliberate preparation
+run and operator review.
+
+`scripts/check_groq_tts.py` is a separate speech-only utility. It loads the
+private `.env`, creates `logs/groq-tts-test.wav`, and reports the selected
+model/voice/duration without playing audio or initializing the robot runtime.
+The setup guide covers replacing the exposed key privately, verifying model
+access, reviewing/publishing the laptop changes, matching Pi Git remotes and
+history, disabling boot startup, confirming real ALSA devices, generating one
+speech test, and manually launching/stopping AURUS. A missing USB microphone
+cannot be repaired by changing its card number in `.env`.
+
+Complete modified/new file set for this follow-up:
+
+| File | Change |
+| --- | --- |
+| `src/services/groq_tts_service.py` (new) | English model/voice validation, bounded cloud synthesis, safe errors and PCM joining |
+| `src/services/tts_service.py` | Explicit provider selection, Groq worker branch, health, existing WAV routes and peak-limited gain |
+| `src/runtime.py` | Speech model in health output |
+| `.env.example` | Groq speech settings, playback override and current vision model example |
+| `scripts/check_groq_tts.py` (new) | Speech-only file-generation diagnostic |
+| `scripts/prepare_demo_audio.py` | Optional Groq cloud generation with existing mastering/cache publication |
+| `tests/conftest.py` | Isolate tests from a deployed cloud-backend environment setting |
+| `tests/test_groq_tts.py` (new) | 18 mocked synthesis, chunking, error, routing, recovery, gain and cache-preservation cases |
+| `tests/test_exhibition_demo.py` | Accept prepared cache metadata from either supported neural provider |
+| `pytest.ini` | Include Groq test file in discovery |
+| `docs/PI_MANUAL_SETUP.md` (new) | Ordered manual Pi deployment/audio/startup instructions |
+| `assets/fit_expo/README.md` | Optional Groq regeneration and accurate existing-cache provenance |
+| `AURUS_FINAL_IMPLEMENTATION_REPORT.md` | Current integration and verification record |
+
+Verification actually performed:
+
+- Targeted initial Groq/audio regression run: **28 passed, 41 deselected**.
+- Final `python -m pytest -q -rs`: **217 passed, 0 failed, 2 skipped**, 6.65 s.
+  The two skips are existing OpenCV-unavailable tests. The existing
+  pytest-asyncio fixture-loop-scope deprecation warning remains.
+- `python -m compileall -q src/services/groq_tts_service.py src/services/tts_service.py scripts/check_groq_tts.py scripts/prepare_demo_audio.py tests/test_groq_tts.py`:
+  passed. Both speech scripts' `--help` entry points passed without synthesis.
+- Diff whitespace/line-ending verification and source parsing completed after
+  documentation edits. Existing neural WAV files and manifest remain unchanged.
+
+All cloud synthesis, playback and driver operations in tests were mocked.
+There was no live Groq speech request, no use of the key pasted into chat,
+no private `.env` edit, no physical playback, and no GPIO/motor operation.
+No commit, push, Pi transfer, service action or deployment was performed.
+Live account access, cloud output and actual speaker audibility remain pending
+the operator's manual steps. The SDK was already a declared runtime dependency;
+no runtime requirement or model binary was added.
+
+Primary references: [Groq Orpheus TTS](https://console.groq.com/docs/text-to-speech/orpheus),
+[Groq English model](https://console.groq.com/docs/model/canopylabs/orpheus-v1-english),
+[Groq Python speech resource in the supported SDK](https://github.com/groq/groq-python/blob/v0.31.0/src/groq/resources/audio/speech.py).

@@ -1,4 +1,4 @@
-"""Serialized local TTS with Piper, eSpeak, and visual-only fallback.
+"""Serialized configurable cloud/local TTS and prerecorded demo playback.
 
 Audio output can be routed to the Pi's local speaker or streamed over
 SocketIO to the connected PC's browser.  Set ``AURUS_AUDIO_OUTPUT`` to
@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import numpy as np
+
+from src.services.groq_tts_service import GroqSpeechSynthesizer
 
 logger = logging.getLogger("aurus.tts")
 
@@ -91,8 +93,14 @@ class TTSService:
         self._busy = threading.Event()
         self._cached_lock = threading.Lock()
         self._cached_job: CachedPlayback | None = None
+        self.backend_preference = os.getenv("AURUS_TTS_BACKEND", "auto").strip().lower()
+        self._groq_speech = GroqSpeechSynthesizer() if self.backend_preference == "groq" else None
         self.backend = self._select_backend()
-        self.error = "" if self.backend != "visual" else "No local TTS executable available"
+        self.error = self._groq_speech.error if self._groq_speech else "" if self.backend != "visual" else "No TTS executable available"
+        if self.backend_preference not in ("auto", "groq"):
+            self.error = "Invalid AURUS_TTS_BACKEND; choose groq or auto"
+        if self._groq_speech:
+            self.voice = self._groq_speech.voice
 
     # ------------------------------------------------------------------
     # Audio output routing
@@ -152,6 +160,10 @@ class TTSService:
     # ------------------------------------------------------------------
 
     def _select_backend(self) -> str:
+        if self.backend_preference == "groq":
+            return "groq"
+        if self.backend_preference != "auto":
+            return "visual"
         # Prefer deterministic local synthesis. Edge TTS is retained only as a
         # fallback so chat and wake acknowledgement do not depend on a network
         # round trip before audio playback begins.
@@ -174,7 +186,13 @@ class TTSService:
 
     @property
     def healthy(self) -> bool:
+        if self.backend == "groq":
+            return self._groq_speech.ready and not self.error and not self._groq_speech.error
         return self.backend != "visual"
+
+    @property
+    def model_name(self):
+        return self._groq_speech.model if self._groq_speech else None
 
     @property
     def busy(self) -> bool:
@@ -252,6 +270,9 @@ class TTSService:
         self.playback_active.clear()
 
     def speak(self, text: str, on_complete: Callable[[], None] | None = None) -> bool:
+        if self.backend == "groq" and not self._groq_speech.ready:
+            self.error = self._groq_speech.error
+            return False
         clean = " ".join(text.strip().split())[:400]
         if not clean:
             return False
@@ -308,6 +329,9 @@ class TTSService:
             frames = source.readframes(params.nframes)
         samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
         gain = max(0.1, 1.0 + self.volume_percent / 100.0) * (10.0 ** (self.gain_db / 20.0))
+        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        if peak:
+            gain = min(gain, (32767 * 10 ** (-1 / 20)) / peak)
         boosted = np.clip(samples * gain, -32768, 32767).astype(np.int16)
         with wave.open(path, "wb") as output:
             output.setparams(params)
@@ -428,7 +452,9 @@ class TTSService:
     # ------------------------------------------------------------------
 
     def _speak(self, text: str) -> None:
-        if self.backend == "edge-tts":
+        if self.backend == "groq":
+            self._speak_groq(text)
+        elif self.backend == "edge-tts":
             self._speak_edge_tts(text)
         elif self.backend == "piper":
             self._speak_piper(text)
@@ -441,6 +467,21 @@ class TTSService:
                 amplitude = max(0, min(200, 100 + self.volume_percent))
                 subprocess.run([self.backend, "-a", str(amplitude), text], check=True, timeout=30)
                 self.active_output = "pi"
+
+    def _speak_groq(self, text):
+        handle = tempfile.NamedTemporaryFile(prefix="aurus-groq-", suffix=".wav", delete=False)
+        handle.close()
+        try:
+            self._groq_speech.synthesize(text, handle.name)
+            if self._stop.is_set():
+                return
+            self._amplify_wav(handle.name)
+            self._play_or_stream(handle.name)
+        finally:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
 
     def _speak_espeak_to_file(self, text: str) -> None:
         """Run espeak/espeak-ng writing to a temp WAV so it can be streamed."""
@@ -480,13 +521,17 @@ class TTSService:
             except Exception as exc:
                 self.error = str(exc)[:200]
                 print(f"[TTSService] {self.backend} playback failed: {self.error}")
-                if self.backend == "edge-tts" and importlib.util.find_spec("piper") and self.piper_model and self.piper_model.exists():
+                if self.backend == "groq":
+                    # Keep the selected provider. No surprise local voice or
+                    # partial-response replay after a cloud/account failure.
+                    pass
+                elif self.backend == "edge-tts" and importlib.util.find_spec("piper") and self.piper_model and self.piper_model.exists():
                     self.backend = "piper"
                 else:
                     fallback = "espeak-ng" if shutil.which("espeak-ng") else "espeak" if shutil.which("espeak") else None
                     self.backend = fallback or "visual"
                     self._piper_voice = None
-                if self.backend != "visual":
+                if self.backend not in ("visual", "groq"):
                     try:
                         self._speak(text)
                         self.error = ""
