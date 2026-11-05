@@ -27,6 +27,7 @@ def create_app(runtime):
     sensor_operators: set[str] = set()
     sensor_token = os.getenv("AURUS_SENSOR_OPERATOR_TOKEN", "")
     browser_speakers: set[str] = set()
+    active_text_requests = 0
 
     def event_sink(event, data):
         # Demo browser audio belongs to the operator who started the run.
@@ -40,6 +41,18 @@ def create_app(runtime):
     @app.get("/")
     def index():
         return render_template("index.html")
+
+    @app.get("/face")
+    def face_display():
+        return render_template("face.html")
+
+    @app.get("/face/state")
+    def face_state():
+        with clients_lock:
+            operator_busy = active_text_requests > 0
+        response = jsonify(expression=runtime.face_expression(operator_busy))
+        response.cache_control.no_store = True
+        return response
 
     @app.get("/health")
     def health():
@@ -190,6 +203,16 @@ def create_app(runtime):
     def browser_listen_timeout(_data=None):
         runtime.browser_listening_finished()
 
+    def run_text_request(handler, text):
+        nonlocal active_text_requests
+        with clients_lock:
+            active_text_requests += 1
+        try:
+            handler(text)
+        finally:
+            with clients_lock:
+                active_text_requests -= 1
+
     @socketio.on("send_text")
     def send_text(data):
         data = payload(data)
@@ -199,7 +222,11 @@ def create_app(runtime):
             source = "text"
         if text:
             handler = runtime.handle_browser_speech if source == "browser-mic" else runtime.handle_text
-            socketio.start_background_task(handler, text)
+            socketio.start_background_task(run_text_request, handler, text)
+
+    @socketio.on("detect_objects")
+    def detect_objects(_data=None):
+        return runtime.detect_objects()
 
     @socketio.on("run_mcp_agent")
     def run_mcp_agent(data):

@@ -101,6 +101,7 @@ class RobotRuntime:
         self._event_sink: Callable[[str, dict], None] = lambda event, payload: None
         self._started = False
         self._lock = threading.RLock()
+        self._object_scan = threading.Lock()
         self._last_manual_sequence = -1
         self._demo_dashboard_sid = None
         self.demo = ExhibitionDemo(self)
@@ -112,8 +113,50 @@ class RobotRuntime:
         demo = getattr(self, "demo", None)
         return bool(demo and demo.active)
 
+    def face_expression(self, operator_busy: bool = False) -> str:
+        if self.arbiter.estopped:
+            return "estop"
+        if self.tts.local_playback_active.is_set() or self.speech.browser_playback_active.is_set():
+            return "speaking"
+        if (operator_busy or self.speech.processing or self.mcp_agent.busy
+                or self._object_scan.locked() or self.tts.playback_active.is_set()):
+            return "thinking"
+        if self.arbiter.mode == RobotMode.LISTENING:
+            return "listening"
+        if self.demo_active:
+            return "performing"
+        if self.arbiter.mode == RobotMode.EXPLORING:
+            return "exploring"
+        return "idle"
+
+    def detect_objects(self) -> dict:
+        result = {"status": "error", "objects": []}
+        with self._lock:
+            if self.demo_active:
+                return {**result, "message": "Stop the FIT Expo demo before scanning for objects."}
+            if not self._object_scan.acquire(blocking=False):
+                return {**result, "message": "An object scan is already running. Try again in a moment."}
+        try:
+            frame = self.vision.get_fresh_jpeg()
+            if not frame:
+                return {**result, "message": "There is no fresh camera frame to scan. Check the live feed and try again."}
+            if not self.groq_vision.ready:
+                return {**result, "message": "Groq vision is unavailable. Check GROQ_API_KEY and the Groq SDK."}
+            objects = self.groq_vision.detect_objects(frame)
+            if objects is None:
+                return {**result, "message": "Object detection failed. Check the connection and Groq vision model access, then retry."}
+            if objects:
+                message = f"I see {', '.join(objects)}."
+            else:
+                message = "I couldn't identify any clear objects. Hold a prop near the center of the camera and try again."
+            return {"status": "ok", "objects": objects, "message": message}
+        finally:
+            self._object_scan.release()
+
     def start_exhibition_demo(self, owner_sid=None):
         with self._lock:
+            if self._object_scan.locked():
+                return False
             return self.demo.start(owner_sid or self._demo_dashboard_sid)
 
     def stop_exhibition_demo(self, reason="Stopped by operator"):
@@ -488,6 +531,11 @@ class RobotRuntime:
             else:
                 response = f"I recognize you as {person.name}, but you have not taught me a fact yet."
             return self._announce(response, source, clean, "local")
+
+        if lower.rstrip(".?!") in ("detect objects", "identify this object", "guess this object"):
+            detection = self.detect_objects()
+            provider = "groq-vision" if detection["status"] == "ok" else "local"
+            return self._announce(detection["message"], source, clean, provider)
 
         visual_questions = (
             "what do you see",

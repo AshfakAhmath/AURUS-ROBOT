@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#071218">
+  <title>AURUS Face Display</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23071218'/%3E%3Crect x='8' y='8' width='6' height='11' rx='3' fill='%2377fbe1'/%3E%3Crect x='18' y='8' width='6' height='11' rx='3' fill='%2377fbe1'/%3E%3Cpath d='M12 22q4 5 8 0' fill='none' stroke='%2377fbe1' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/face.css') }}">
+  <script defer src="{{ url_for('static', filename='js/face.js') }}"></script>
+</head>
+<body>
+  <main class="display" id="face-display" data-expression="offline" data-state-url="{{ url_for('face_state') }}">
+    <header class="display-header">
+      <h1>AURUS<span> / TECHTITANS</span></h1>
+      <p class="display-live" id="display-link">Connecting</p>
+    </header>
+    <div class="face-stage" aria-hidden="true">
+      <div class="visor">
+        <div class="eyes">
+          <div class="eye"></div>
+          <div class="eye"></div>
+        </div>
+        <div class="mouth"></div>
+      </div>
+    </div>
+    <footer class="display-footer">
+      <div class="expression-indicator" aria-hidden="true"></div>
+      <p id="expression-caption" role="status">Connecting to AURUS</p>
+    </footer>
+  </main>
+</body>
+</html>

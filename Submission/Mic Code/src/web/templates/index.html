@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080b10">
+  <title>AURUS Command Center</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2311181d'/%3E%3Cpath d='M8 24 14 8h4l6 16h-4l-1.2-3.5h-5.7L12 24zm6.2-7h3.5L16 12z' fill='%2371e3d3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/evaluation.css') }}">
+</head>
+<body>
+  <div class="ambient-glow" aria-hidden="true"></div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span>A</span></div>
+        <div class="brand-copy">
+          <strong>AURUS</strong>
+          <span>ROBOTICS OS</span>
+        </div>
+      </div>
+
+      <div class="rail-section">
+        <p class="rail-label">Console</p>
+        <div class="rail-item active">
+          <span class="rail-icon overview-icon" aria-hidden="true"></span>
+          <span>Command center</span>
+          <i></i>
+        </div>
+      </div>
+
+      <div class="rail-section system-rail">
+        <p class="rail-label">Live system</p>
+        <div class="rail-stat">
+          <span>Runtime</span>
+          <strong><i class="live-dot"></i> Active</strong>
+        </div>
+        <div class="rail-stat">
+          <span>Compute</span>
+          <strong>On-device</strong>
+        </div>
+        <div class="rail-stat">
+          <span>Control</span>
+          <strong>Deterministic</strong>
+        </div>
+      </div>
+
+      <div class="rail-footer">
+        <div class="security-mark" aria-hidden="true"></div>
+        <div>
+          <strong>Local-first</strong>
+          <span>Private by design</span>
+        </div>
+        <span class="version">v3.0</span>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div class="page-title">
+          <p class="eyebrow">AURUS / OPERATIONS</p>
+          <h1>Command Center</h1>
+          <p>Realtime perception, movement and interaction</p>
+        </div>
+
+        <div class="top-actions">
+          <div class="status-cluster">
+            <span id="connection" class="pill bad"><i></i> Offline</span>
+            <span id="mode" class="pill mode-pill">Idle</span>
+          </div>
+          <button id="clear-estop" class="button ghost-button">Clear E-stop</button>
+          <button id="estop" class="button estop"><span class="stop-icon"></span>Emergency stop</button>
+        </div>
+      </header>
+
+      <main class="dashboard-grid">
+        <section class="panel camera-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">Perception</p>
+              <h2>Visual identity</h2>
+            </div>
+            <span id="vision-backend" class="meta-chip">Waiting</span>
+          </div>
+
+          <div class="camera-frame">
+            <img id="camera" src="/video_feed" alt="Live AURUS camera stream">
+            <div class="viewfinder" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <div class="camera-status"><i></i> Live feed</div>
+            <div class="identity-card">
+              <div class="identity-orb" aria-hidden="true"></div>
+              <div>
+                <span id="identity-status">No target</span>
+                <strong id="identity-name">Unknown</strong>
+                <small id="identity-confidence">Confidence 0.00</small>
+              </div>
+            </div>
+          </div>
+
+          <div class="enrollment-block">
+            <div class="enroll-row">
+              <label class="input-shell" for="enroll-name">
+                <span>Name</span>
+                <input id="enroll-name" maxlength="80" autocomplete="off" placeholder="Person to enroll">
+              </label>
+              <button id="enroll" class="button primary-button">Enroll face</button>
+            </div>
+            <div class="progress"><div id="enroll-progress"></div></div>
+            <p id="enroll-label" class="muted">Enrollment idle</p>
+          </div>
+        </section>
+
+        <section class="panel controls-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">Movement</p>
+              <h2>Behavior control</h2>
+            </div>
+            <span class="meta-chip safe">Safety gated</span>
+          </div>
+
+          <div class="field-label"><span>Operating mode</span><small>Select behavior</small></div>
+          <div class="mode-grid">
+            <button data-mode="idle"><i></i>Idle</button>
+            <button data-mode="manual"><i></i>Manual</button>
+            <button data-mode="exploring"><i></i>Explore</button>
+          </div>
+
+          <div class="speed-control">
+            <div class="field-label">
+              <label for="speed-slider">Drive limit</label>
+              <strong id="speed-value">1.00</strong>
+            </div>
+            <input type="range" id="speed-slider" min="0.20" max="1.00" step="0.05" value="1.0">
+            <div class="range-labels"><span>Precise</span><span>Maximum</span></div>
+          </div>
+
+          <div class="drive-heading">
+            <div>
+              <span>Manual drive</span>
+              <small>Hold to move</small>
+            </div>
+            <kbd>MANUAL</kbd>
+          </div>
+          <div class="drive-pad" aria-label="Manual movement controls">
+            <button data-drive="forward" aria-label="Drive forward"><span>↑</span></button>
+            <button data-drive="left" aria-label="Strafe left"><span>←</span></button>
+            <button data-drive="stop" class="drive-stop" aria-label="Stop movement"><span></span></button>
+            <button data-drive="right" aria-label="Strafe right"><span>→</span></button>
+            <button data-drive="backward" aria-label="Drive backward"><span>↓</span></button>
+            <button data-drive="spin-left" class="spin-left" aria-label="Rotate left"><span>↶</span></button>
+            <button data-drive="spin-right" class="spin-right" aria-label="Rotate right"><span>↷</span></button>
+          </div>
+
+          <button id="showcase" class="button showcase"><span class="spark-icon">✦</span>Run mecanum showcase</button>
+        </section>
+
+        <section class="panel awareness-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">Environment</p>
+              <h2>Spatial awareness</h2>
+            </div>
+            <span id="sensor-age" class="meta-chip">—</span>
+          </div>
+
+          <div class="radar-wrap">
+            <canvas id="radar" width="720" height="360" aria-label="Live obstacle distance radar"></canvas>
+            <div class="radar-sweep" aria-hidden="true"></div>
+            <span class="range range-near">0.5m</span>
+            <span class="range range-far">2.0m</span>
+          </div>
+
+          <div class="sensor-grid">
+            <div><span>Front left</span><strong id="s-fl">—</strong><i></i></div>
+            <div><span>Front</span><strong id="s-f">—</strong><i></i></div>
+            <div><span>Front right</span><strong id="s-fr">—</strong><i></i></div>
+            <div><span>Rear left</span><strong id="s-rl">—</strong><i></i></div>
+            <div><span>Rear right</span><strong id="s-rr">—</strong><i></i></div>
+          </div>
+
+          <div class="decision">
+            <div class="decision-icon" aria-hidden="true"></div>
+            <div>
+              <span>Safety decision</span>
+              <strong id="decision">Waiting for telemetry</strong>
+            </div>
+            <small id="motion-vector">Final · 0.00 / 0.00 / 0.00</small>
+          </div>
+        </section>
+
+        <section class="panel health-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">Diagnostics</p>
+              <h2>System health</h2>
+            </div>
+            <span class="meta-chip safe"><i></i> Live</span>
+          </div>
+          <p class="panel-intro">Every subsystem is monitored independently for graceful degradation.</p>
+          <div id="health" class="health-grid"></div>
+          <p id="error" class="error" role="alert"></p>
+        </section>
+
+        <section class="panel mission-panel">
+          <div class="panel-head">
+            <div>
+              <p class="section-kicker">Curiosity engine</p>
+              <h2>Exploration discoveries</h2>
+            </div>
+            <span id="mission-status" class="meta-chip">Mission idle</span>
+          </div>
+          <div class="mission-overview">
+            <div><span>Elapsed</span><strong id="mission-elapsed">0:00</strong></div>
+            <div><span>Discoveries</span><strong id="mission-observations">0</strong></div>
+            <div><span>People</span><strong id="mission-people">0</strong></div>
+            <div><span>Route changes</span><strong id="mission-routes">0</strong></div>
+          </div>
+          <div id="discoveries" class="discovery-strip" aria-live="polite">
+            <div class="discovery-empty">
+              <span>✦</span>
+              <div><strong>No mission discoveries yet</strong><p>Start Explore mode to build a live visual mission log.</p></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel conversation-panel">
+          <div class="panel-head conversation-head">
+            <div>
+              <p class="section-kicker">Intelligence</p>
+              <h2>Companion interaction</h2>
+            </div>
+            <span id="provider" class="meta-chip intelligence-chip"><i></i> Local</span>
+          </div>
+
+          <div id="chat" class="chat" aria-live="polite">
+            <div class="chat-empty">
+              <div class="assistant-mark" aria-hidden="true">A</div>
+              <div>
+                <strong>AURUS is ready</strong>
+                <p>Speak naturally or enter a command below.</p>
+              </div>
+            </div>
+            <p class="system">Runtime initialized. Core behavior is offline-first.<small>system</small></p>
+          </div>
+
+          <div class="composer">
+            <label for="message" class="sr-only">Message AURUS</label>
+            <input id="message" maxlength="1000" autocomplete="off" placeholder="Message AURUS…">
+            <div class="composer-actions">
+              <button id="listen" class="icon-button mic" title="Push to talk" aria-label="Push to talk"><span class="mic-icon"></span></button>
+              <button id="browser-mic" class="button browser-mic-btn" title="Toggle continuous browser microphone"><span>🎤</span> Browser Mic</button>
+              <button id="send" class="button send-button" aria-label="Send message">Send <span>↗</span></button>
+            </div>
+          </div>
+
+          <div class="memory-row">
+            <div class="memory-label"><span class="memory-icon" aria-hidden="true"></span><span>Personal memory</span></div>
+            <label for="fact" class="sr-only">Fact to remember</label>
+            <input id="fact" maxlength="500" autocomplete="off" placeholder="A fact to remember about the recognized person">
+            <button id="remember" class="button ghost-button">Remember</button>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/evaluation.js') }}"></script>
+</body>
+</html>
