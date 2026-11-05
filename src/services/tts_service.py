@@ -1,4 +1,4 @@
-"""Serialized configurable cloud/local TTS and prerecorded demo playback.
+"""Original normal TTS plus independent, live Groq FIT Expo narration.
 
 Audio output can be routed to the Pi's local speaker or streamed over
 SocketIO to the connected PC's browser.  Set ``AURUS_AUDIO_OUTPUT`` to
@@ -35,8 +35,8 @@ AudioEmitCallback = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass
-class CachedPlayback:
-    path: Path
+class DemoSpeech:
+    text: str
     on_complete: Callable[[bool], None]
     recipient_sid: str | None
     cancelled: threading.Event
@@ -86,21 +86,17 @@ class TTSService:
         # Tracks which output was actually used for the most recent utterance.
         self.active_output: str = "pi"
 
-        self._queue: queue.Queue[tuple[str, Callable[[], None] | None] | CachedPlayback | None] = queue.Queue(maxsize=8)
+        self._queue: queue.Queue[tuple[str, Callable[[], None] | None] | DemoSpeech | None] = queue.Queue(maxsize=8)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._piper_voice = None
         self._busy = threading.Event()
-        self._cached_lock = threading.Lock()
-        self._cached_job: CachedPlayback | None = None
-        self.backend_preference = os.getenv("AURUS_TTS_BACKEND", "auto").strip().lower()
-        self._groq_speech = GroqSpeechSynthesizer() if self.backend_preference == "groq" else None
+        self._demo_lock = threading.Lock()
+        self._demo_job: DemoSpeech | None = None
+        self._demo_speech = None
+        self.demo_error = ""
         self.backend = self._select_backend()
-        self.error = self._groq_speech.error if self._groq_speech else "" if self.backend != "visual" else "No TTS executable available"
-        if self.backend_preference not in ("auto", "groq"):
-            self.error = "Invalid AURUS_TTS_BACKEND; choose groq or auto"
-        if self._groq_speech:
-            self.voice = self._groq_speech.voice
+        self.error = "" if self.backend != "visual" else "No local TTS executable available"
 
     # ------------------------------------------------------------------
     # Audio output routing
@@ -137,8 +133,8 @@ class TTSService:
                 "data": base64.b64encode(audio_bytes).decode("ascii"),
                 "format": mime_format,
             }
-            with self._cached_lock:
-                job = self._cached_job
+            with self._demo_lock:
+                job = self._demo_job
                 if job is not None:
                     if not job.recipient_sid:
                         return False
@@ -149,9 +145,9 @@ class TTSService:
             logger.info("Audio streamed to browser (%s, %d bytes).", ext, len(audio_bytes))
             return True
         except Exception as exc:
-            with self._cached_lock:
-                if self._cached_job is not None:
-                    self._cached_job.browser_sent = False
+            with self._demo_lock:
+                if self._demo_job is not None:
+                    self._demo_job.browser_sent = False
             logger.warning("Failed to stream audio to browser: %s", exc)
             return False
 
@@ -160,10 +156,6 @@ class TTSService:
     # ------------------------------------------------------------------
 
     def _select_backend(self) -> str:
-        if self.backend_preference == "groq":
-            return "groq"
-        if self.backend_preference != "auto":
-            return "visual"
         # Prefer deterministic local synthesis. Edge TTS is retained only as a
         # fallback so chat and wake acknowledgement do not depend on a network
         # round trip before audio playback begins.
@@ -186,22 +178,23 @@ class TTSService:
 
     @property
     def healthy(self) -> bool:
-        if self.backend == "groq":
-            return self._groq_speech.ready and not self.error and not self._groq_speech.error
         return self.backend != "visual"
-
-    @property
-    def model_name(self):
-        return self._groq_speech.model if self._groq_speech else None
 
     @property
     def busy(self) -> bool:
         return self._busy.is_set() or not self._queue.empty()
 
-    def speak_cached(self, path, on_complete, recipient_sid, cancelled) -> bool:
-        """Replay prepared audio; no synthesis, amplification or network calls."""
-        job = CachedPlayback(Path(path), on_complete, recipient_sid, cancelled)
-        if not job.path.is_file() or self._stop.is_set():
+    def prepare_demo_speech(self) -> bool:
+        """Check demo configuration only; normal speech never uses this client."""
+        if self._demo_speech is None:
+            self._demo_speech = GroqSpeechSynthesizer()
+        self.demo_error = self._demo_speech.error
+        return self._demo_speech.ready
+
+    def speak_demo(self, text, on_complete, recipient_sid, cancelled) -> bool:
+        """Queue a fresh Groq request for this line; no saved audio is reused."""
+        job = DemoSpeech(text, on_complete, recipient_sid, cancelled)
+        if not text.strip() or self._stop.is_set() or cancelled.is_set():
             return False
         try:
             self._queue.put_nowait(job)
@@ -209,9 +202,9 @@ class TTSService:
         except queue.Full:
             return False
 
-    def acknowledge_cached(self, playback_id, sid, success) -> bool:
-        with self._cached_lock:
-            job = self._cached_job
+    def acknowledge_demo(self, playback_id, sid, success) -> bool:
+        with self._demo_lock:
+            job = self._demo_job
             if (job is None or not job.browser_sent or job.playback_id != playback_id
                     or job.recipient_sid != sid or job.finished.is_set() or job.cancelled.is_set()):
                 return False
@@ -219,38 +212,62 @@ class TTSService:
             job.finished.set()
             return True
 
-    def _run_cached(self, job):
+    @staticmethod
+    def _boost_demo_audio(path):
+        """Apply bounded demo-only gain; ordinary speech keeps its old gain."""
+        try:
+            gain_db = max(0.0, min(24.0, float(os.getenv("AURUS_DEMO_TTS_GAIN_DB", "6"))))
+        except ValueError:
+            gain_db = 6.0
+        with wave.open(str(path), "rb") as source:
+            params = source.getparams()
+            samples = np.frombuffer(source.readframes(params.nframes), dtype="<i2").astype(np.float32)
+        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        gain = min(10 ** (gain_db / 20), 32767 * 10 ** (-1 / 20) / peak) if peak else 1.0
+        with wave.open(str(path), "wb") as output:
+            output.setparams(params)
+            output.writeframes((samples * gain).astype("<i2").tobytes())
+
+    def _run_demo(self, job):
         self._busy.set()
         self.playback_active.set()
-        with self._cached_lock:
-            self._cached_job = job
+        with self._demo_lock:
+            self._demo_job = job
         success = False
         try:
-            if job.cancelled.is_set():
+            if job.cancelled.is_set() or self._stop.is_set():
                 return
-            self._play_or_stream(str(job.path))
-            if job.browser_sent:
-                deadline = time.monotonic() + 45.0
-                while not job.finished.wait(0.05):
-                    if job.cancelled.is_set() or self._stop.is_set():
-                        return
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("Browser demo audio acknowledgement timed out")
-                success = job.success
-            else:
-                success = True
-            self.error = "" if success else "Demo audio playback failed"
+            if not self.prepare_demo_speech():
+                raise RuntimeError(self.demo_error)
+            with tempfile.TemporaryDirectory(prefix="aurus-live-demo-") as scratch:
+                path = Path(scratch) / "speech.wav"
+                self._demo_speech.synthesize(job.text, path, cancelled=job.cancelled)
+                if job.cancelled.is_set() or self._stop.is_set():
+                    return
+                self._boost_demo_audio(path)
+                self._play_or_stream(str(path))
+                if job.browser_sent:
+                    deadline = time.monotonic() + 45.0
+                    while not job.finished.wait(0.05):
+                        if job.cancelled.is_set() or self._stop.is_set():
+                            return
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("Browser demo audio acknowledgement timed out")
+                    success = job.success
+                else:
+                    success = True
+                self.demo_error = "" if success else "Demo audio playback failed"
         except Exception as exc:
-            self.error = str(exc)[:200]
+            self.demo_error = str(exc)[:250]
         finally:
-            with self._cached_lock:
-                self._cached_job = None
+            with self._demo_lock:
+                self._demo_job = None
             self.playback_active.clear()
             self._busy.clear()
             try:
                 job.on_complete(success and not job.cancelled.is_set() and not self._stop.is_set())
             except Exception:
-                logger.exception("Cached speech completion callback failed")
+                logger.exception("Demo speech completion callback failed")
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -270,9 +287,6 @@ class TTSService:
         self.playback_active.clear()
 
     def speak(self, text: str, on_complete: Callable[[], None] | None = None) -> bool:
-        if self.backend == "groq" and not self._groq_speech.ready:
-            self.error = self._groq_speech.error
-            return False
         clean = " ".join(text.strip().split())[:400]
         if not clean:
             return False
@@ -329,9 +343,6 @@ class TTSService:
             frames = source.readframes(params.nframes)
         samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
         gain = max(0.1, 1.0 + self.volume_percent / 100.0) * (10.0 ** (self.gain_db / 20.0))
-        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
-        if peak:
-            gain = min(gain, (32767 * 10 ** (-1 / 20)) / peak)
         boosted = np.clip(samples * gain, -32768, 32767).astype(np.int16)
         with wave.open(path, "wb") as output:
             output.setparams(params)
@@ -452,9 +463,7 @@ class TTSService:
     # ------------------------------------------------------------------
 
     def _speak(self, text: str) -> None:
-        if self.backend == "groq":
-            self._speak_groq(text)
-        elif self.backend == "edge-tts":
+        if self.backend == "edge-tts":
             self._speak_edge_tts(text)
         elif self.backend == "piper":
             self._speak_piper(text)
@@ -467,21 +476,6 @@ class TTSService:
                 amplitude = max(0, min(200, 100 + self.volume_percent))
                 subprocess.run([self.backend, "-a", str(amplitude), text], check=True, timeout=30)
                 self.active_output = "pi"
-
-    def _speak_groq(self, text):
-        handle = tempfile.NamedTemporaryFile(prefix="aurus-groq-", suffix=".wav", delete=False)
-        handle.close()
-        try:
-            self._groq_speech.synthesize(text, handle.name)
-            if self._stop.is_set():
-                return
-            self._amplify_wav(handle.name)
-            self._play_or_stream(handle.name)
-        finally:
-            try:
-                os.unlink(handle.name)
-            except OSError:
-                pass
 
     def _speak_espeak_to_file(self, text: str) -> None:
         """Run espeak/espeak-ng writing to a temp WAV so it can be streamed."""
@@ -509,8 +503,8 @@ class TTSService:
                 continue
             if item is None:
                 break
-            if isinstance(item, CachedPlayback):
-                self._run_cached(item)
+            if isinstance(item, DemoSpeech):
+                self._run_demo(item)
                 continue
             text, on_complete = item
             self._busy.set()
@@ -521,17 +515,13 @@ class TTSService:
             except Exception as exc:
                 self.error = str(exc)[:200]
                 print(f"[TTSService] {self.backend} playback failed: {self.error}")
-                if self.backend == "groq":
-                    # Keep the selected provider. No surprise local voice or
-                    # partial-response replay after a cloud/account failure.
-                    pass
-                elif self.backend == "edge-tts" and importlib.util.find_spec("piper") and self.piper_model and self.piper_model.exists():
+                if self.backend == "edge-tts" and importlib.util.find_spec("piper") and self.piper_model and self.piper_model.exists():
                     self.backend = "piper"
                 else:
                     fallback = "espeak-ng" if shutil.which("espeak-ng") else "espeak" if shutil.which("espeak") else None
                     self.backend = fallback or "visual"
                     self._piper_voice = None
-                if self.backend not in ("visual", "groq"):
+                if self.backend != "visual":
                     try:
                         self._speak(text)
                         self.error = ""

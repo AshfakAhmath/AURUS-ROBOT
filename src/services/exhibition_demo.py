@@ -4,13 +4,12 @@ import threading
 import time
 
 from src.core.models import RobotMode
-from src.services.demo_script import DemoAudioCache
+from src.services.demo_script import DEMO_CLIPS
 
 
 class ExhibitionDemo:
-    def __init__(self, runtime, directory):
+    def __init__(self, runtime):
         self.runtime = runtime
-        self.audio = DemoAudioCache(directory)
         self._lock = threading.RLock()
         self._cancelled = threading.Event()
         self._thread = None
@@ -43,10 +42,8 @@ class ExhibitionDemo:
                     or self.runtime.tts.busy or self.runtime.speech.listening
                     or self.runtime.mcp_agent.busy or self.runtime.speech.browser_playback_active.is_set()):
                 return False
-            try:
-                self.audio.validate()
-            except Exception as exc:
-                self._update(status="error", reason=f"Prepare cached FIT Expo audio first: {exc}")
+            if not self.runtime.tts.prepare_demo_speech():
+                self._update(status="error", reason=self.runtime.tts.demo_error)
                 return False
             if not arbiter.set_mode(RobotMode.PERFORMING):
                 return False
@@ -84,18 +81,18 @@ class ExhibitionDemo:
     def _speak(self, key):
         if not self._alive():
             return False
-        clip = self.audio.clips[key]
+        text = DEMO_CLIPS[key]
         done = threading.Event()
         result = []
         def completed(success):
             result.append(success)
             done.set()
         self._update(stage={"introduction": "Introduction", "movement": "Greeting movements", "turn_left": "Greeting turn", "turn_right": "Greeting turn", "capabilities": "Capabilities", "closing": "Closing", "blocked": "Continuing without movement"}[key])
-        self.runtime.emit("conversation", {"source": "demo", "transcript": "", "response": clip["text"], "provider": "cached-tts"})
-        if not self.runtime.tts.speak_cached(clip["path"], completed, self._owner_sid, self._cancelled):
+        self.runtime.emit("conversation", {"source": "demo", "transcript": "", "response": text, "provider": "groq-demo-tts"})
+        if not self.runtime.tts.speak_demo(text, completed, self._owner_sid, self._cancelled):
             self.cancel("Demo audio could not be queued")
             return False
-        deadline = time.monotonic() + 45.0
+        deadline = time.monotonic() + 120.0
         while not done.wait(0.05):
             if not self._alive():
                 return False
@@ -103,7 +100,7 @@ class ExhibitionDemo:
                 self.cancel("Demo audio timed out")
                 return False
         if not result or not result[0]:
-            self.cancel("Demo audio unavailable; check speaker or PC playback")
+            self.cancel(self.runtime.tts.demo_error or "Demo audio unavailable; check Groq access and speaker playback")
             return False
         return self._alive()
 

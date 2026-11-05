@@ -103,7 +103,7 @@ class RobotRuntime:
         self._lock = threading.RLock()
         self._last_manual_sequence = -1
         self._demo_dashboard_sid = None
-        self.demo = ExhibitionDemo(self, self.project_root / "assets" / "fit_expo")
+        self.demo = ExhibitionDemo(self)
         self.behavior.showcase_start = self.start_exhibition_demo
         self.behavior.demo_active = lambda: self.demo_active
 
@@ -391,7 +391,7 @@ class RobotRuntime:
     ) -> dict:
         if self.demo_active:
             # A cloud response/greeting already in flight must not enter the
-            # speech queue between the demo's prepared narration segments.
+            # speech queue between the demo's live narration segments.
             return {"status": "error", "response": "FIT Expo demo is running.", "source": source}
         self.tts.speak(response)
         payload = {
@@ -537,7 +537,7 @@ class RobotRuntime:
         if any(phrase in lower for phrase in ("show me what you can do", "showcase", "dance")):
             started = self.behavior.start_showcase()
             if not started:
-                self.emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity and check the cached audio."})
+                self.emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity and check Groq demo speech access."})
             return {"status": "ok" if started else "error", "message": "FIT Expo demo started" if started else "Demo unavailable"}
         if "status" in lower or "how are your systems" in lower:
             sensors = self.sensor_sampler.get_snapshot()
@@ -615,7 +615,6 @@ class RobotRuntime:
             "tts_backend": self.tts.backend,
             "tts_error": self.tts.error,
             "tts_voice": self.tts.voice,
-            "tts_model": self.tts.model_name,
             "tts_playback_device": self.tts.playback_device or "default",
             "tts_volume_percent": self.tts.volume_percent,
             "tts_gain_db": self.tts.gain_db,

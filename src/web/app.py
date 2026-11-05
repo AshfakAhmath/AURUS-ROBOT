@@ -84,7 +84,7 @@ def create_app(runtime):
     @socketio.on("demo_audio_finished")
     def demo_audio_finished(data):
         data = payload(data)
-        runtime.tts.acknowledge_cached(data.get("playback_id"), request.sid, data.get("success") is True)
+        runtime.tts.acknowledge_demo(data.get("playback_id"), request.sid, data.get("success") is True)
 
     @socketio.on("browser_audio_state")
     def browser_audio_state(data):
@@ -231,7 +231,7 @@ def create_app(runtime):
     @socketio.on("perform_showcase")
     def perform_showcase(_data=None):
         if not runtime.start_exhibition_demo(request.sid):
-            emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity, clear E-STOP if appropriate, and check cached audio."})
+            emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity, clear E-STOP if appropriate, and check Groq demo speech access."})
 
     @socketio.on("stop_showcase")
     def stop_showcase(_data=None):

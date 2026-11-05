@@ -1,4 +1,4 @@
-"""Mocked Groq Orpheus tests; no account requests, playback, or GPIO."""
+"""Mocked demo-only Groq Orpheus tests; no account requests, playback, or GPIO."""
 
 from pathlib import Path
 import threading
@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from src.services.groq_tts_service import GroqSpeechSynthesizer, MODEL, speech_chunks
-from src.services.tts_service import TTSService, CachedPlayback
+from src.services.tts_service import TTSService, DemoSpeech
 
 
 def write_pcm(path, value=1000, channels=1, rate=24000):
@@ -57,7 +57,7 @@ def test_groq_voice_validation_and_missing_key_are_explicit(monkeypatch):
     assert not GroqSpeechSynthesizer(model="unavailable-model", client=fake_client()).ready
 
 
-@pytest.mark.parametrize("status,phrase", [(401, "access denied"), (403, "permissions/terms"), (429, "quota"), (500, "request failed")])
+@pytest.mark.parametrize("status,phrase", [(400, "HTTP 400"), (401, "access denied"), (403, "permissions/terms"), (404, "HTTP 404"), (429, "quota"), (500, "request failed")])
 def test_errors_are_actionable_without_exposing_secret_or_input(tmp_path, status, phrase):
     client = fake_client()
     error = RuntimeError("EXAMPLE_SECRET_MUST_NOT_APPEAR")
@@ -94,96 +94,117 @@ def test_incompatible_chunks_preserve_previous_recording(tmp_path):
     assert destination.read_bytes() == b"previous recording"
 
 
-def configure_groq(monkeypatch):
-    monkeypatch.setenv("AURUS_TTS_BACKEND", "groq")
+def configure_demo_client(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-only-not-a-real-key")
     client = fake_client()
     monkeypatch.setattr("src.services.groq_tts_service.Groq", lambda **kwargs: client)
     return client
 
 
-def test_explicit_groq_overrides_available_piper_and_routes_pcm(monkeypatch, tmp_path):
-    configure_groq(monkeypatch)
+def test_normal_tts_restores_previous_selection_despite_stale_groq_settings(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURUS_TTS_BACKEND", "groq")
+    monkeypatch.setenv("GROQ_TTS_VOICE", "troy")
+    monkeypatch.setenv("AURUS_TTS_VOICE", "en-US-GuyNeural")
+    monkeypatch.setattr("src.services.tts_service.GroqSpeechSynthesizer", Mock(side_effect=AssertionError("Normal TTS must not initialize Groq")))
     model = tmp_path / "ryan.onnx"
     model.write_bytes(b"model")
     monkeypatch.setattr("src.services.tts_service.importlib.util.find_spec", lambda name: object())
-    service = TTSService(model, audio_output="browser", volume_percent=0, gain_db=0)
-    emitted = []
-    service.set_audio_emit(lambda event, data: emitted.append((event, data)))
-    service._speak("Hello from AURUS")
-    assert service.backend == "groq" and service.voice == "troy" and service.model_name == MODEL
-    assert emitted[0][0] == "play_audio" and emitted[0][1]["format"] == "wav"
-    assert service.active_output == "browser"
+    service = TTSService(model)
+    monkeypatch.setattr(service, "_speak_piper", Mock())
+    service._speak("Ordinary reply")
+    assert service.backend == "piper" and service.voice == "en-US-GuyNeural"
+    service._speak_piper.assert_called_once_with("Ordinary reply")
+    assert service._demo_speech is None
 
 
-def test_failed_groq_never_switches_to_local_voice_and_can_retry(monkeypatch):
-    client = configure_groq(monkeypatch)
+def test_demo_uses_separate_settings_and_fresh_api_calls_per_replay(monkeypatch):
+    client = configure_demo_client(monkeypatch)
+    monkeypatch.setenv("AURUS_DEMO_TTS_VOICE", "troy")
+    # Obsolete ordinary-cloud configuration cannot override demo-only settings.
+    monkeypatch.setenv("GROQ_TTS_MODEL", "obsolete")
+    monkeypatch.setenv("GROQ_TTS_VOICE", "invalid")
+    service = TTSService(audio_output="pi")
+    played = []
+    monkeypatch.setattr(service, "_play_wav", lambda path: played.append(Path(path)))
+    backend = service.backend
+    observed = []
+    for _ in range(2):
+        service._run_demo(DemoSpeech("Hello from AURUS", observed.append, "operator", threading.Event()))
+    assert observed == [True, True] and service.backend == backend
+    assert client.audio.speech.create.call_count == 2
+    assert all(call.kwargs["voice"] == "troy" for call in client.audio.speech.create.call_args_list)
+    assert played[0] != played[1] and all(not path.exists() for path in played)
+
+
+def test_demo_worker_cloud_failure_does_not_change_normal_backend_and_can_retry(monkeypatch):
+    client = configure_demo_client(monkeypatch)
     client.audio.speech.create.side_effect = [RuntimeError("offline"), SimpleNamespace(write_to_file=write_pcm)]
-    service = TTSService(audio_output="browser", audio_emit=lambda *args: None)
+    service = TTSService(audio_output="pi")
+    monkeypatch.setattr(service, "_play_wav", Mock())
+    monkeypatch.setattr(service, "_speak", Mock(side_effect=AssertionError("No local fallback for demo")))
+    backend, original_error = service.backend, service.error
+    observed = []
     done = threading.Event()
+    def completed(success):
+        observed.append(success)
+        done.set()
     service.start()
     try:
-        assert service.speak("First reply", done.set)
-        assert done.wait(2)
-        assert service.backend == "groq" and service.error and not service.healthy
+        assert service.speak_demo("First line", completed, "operator", threading.Event())
+        assert done.wait(2) and observed == [False]
+        assert service.demo_error and service.backend == backend and service.error == original_error
         done.clear()
-        assert service.speak("Second reply", done.set)
-        assert done.wait(2)
-        assert service.backend == "groq" and service.healthy
+        assert service.speak_demo("Next attempt", completed, "operator", threading.Event())
+        assert done.wait(2) and observed == [False, True]
+        assert not service.demo_error and service.backend == backend
         assert client.audio.speech.create.call_count == 2
+        service._speak.assert_not_called()
     finally:
         service.stop()
 
 
-def test_cached_demo_replay_does_not_call_groq(monkeypatch):
-    client = configure_groq(monkeypatch)
+def test_cancel_during_cloud_request_prevents_playback_and_later_chunks(monkeypatch):
+    client = configure_demo_client(monkeypatch)
+    cancelled = threading.Event()
+    def response(path):
+        write_pcm(path)
+        cancelled.set()
+    client.audio.speech.create.return_value.write_to_file = response
     service = TTSService(audio_output="pi")
     monkeypatch.setattr(service, "_play_wav", Mock())
-    completed = []
-    cache = Path(__file__).resolve().parents[1] / "assets" / "fit_expo" / "closing.wav"
-    service._run_cached(CachedPlayback(cache, completed.append, "operator", threading.Event()))
-    assert completed == [True]
-    client.audio.speech.create.assert_not_called()
+    observed = []
+    service._run_demo(DemoSpeech("Welcome everyone. " * 30, observed.append, "operator", cancelled))
+    assert observed == [False] and client.audio.speech.create.call_count == 1
+    service._play_wav.assert_not_called()
+    assert not service.busy and not service.playback_active.is_set()
 
 
-def test_large_gain_is_limited_before_pcm_clipping(tmp_path):
+def test_model_terms_error_is_actionable_and_redacted(tmp_path):
+    client = fake_client()
+    error = RuntimeError("EXAMPLE_SECRET_MUST_NOT_APPEAR")
+    error.status_code = 400
+    error.body = {"error": {"code": "model_terms_required", "message": "EXAMPLE_SECRET_MUST_NOT_APPEAR"}}
+    client.audio.speech.create.side_effect = error
+    speech = GroqSpeechSynthesizer(client=client)
+    with pytest.raises(RuntimeError, match="organization admin") as caught:
+        speech.synthesize("Hello", tmp_path / "speech.wav")
+    assert "HTTP 400" in str(caught.value) and "EXAMPLE_SECRET" not in str(caught.value)
+
+
+def test_demo_boost_is_peak_limited_and_separate_from_normal_volume(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURUS_DEMO_TTS_GAIN_DB", "12")
     path = tmp_path / "volume.wav"
     write_pcm(path, value=20000)
-    service = TTSService(volume_percent=100, gain_db=12)
-    service._amplify_wav(str(path))
+    TTSService._boost_demo_audio(path)
     with wave.open(str(path), "rb") as source:
         samples = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2")
     assert 28000 < samples.max() < 30000
 
 
-def test_missing_key_rejects_ordinary_queue_but_keeps_cached_support(monkeypatch):
-    monkeypatch.setenv("AURUS_TTS_BACKEND", "groq")
+def test_missing_key_affects_only_demo_readiness(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     service = TTSService()
-    assert service.backend == "groq" and not service.healthy
-    assert not service.speak("Hello")
-
-
-def test_failed_groq_demo_preparation_preserves_working_cache(monkeypatch, tmp_path):
-    import asyncio
-    from scripts import prepare_demo_audio
-
-    destination = tmp_path / "assets" / "fit_expo"
-    destination.mkdir(parents=True)
-    (destination / "introduction.wav").write_bytes(b"working audio")
-    (destination / "manifest.json").write_bytes(b"working manifest")
-    previous = {path.name: path.read_bytes() for path in destination.iterdir()}
-    speech = SimpleNamespace(ready=True, model=MODEL, synthesize=Mock(side_effect=RuntimeError("Cloud unavailable")))
-    monkeypatch.setattr("src.services.groq_tts_service.GroqSpeechSynthesizer", lambda **kwargs: speech)
-    monkeypatch.setattr(prepare_demo_audio, "ROOT", tmp_path)
-    monkeypatch.setattr(prepare_demo_audio.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(prepare_demo_audio, "analyse", lambda *args: {"input_i": "-12"})
-
-    async def no_wait(*args):
-        pass
-
-    monkeypatch.setattr(prepare_demo_audio.asyncio, "sleep", no_wait)
-    args = SimpleNamespace(provider="groq", model=MODEL, voice="troy", rate="-8%")
-    with pytest.raises(RuntimeError, match="Cloud unavailable"):
-        asyncio.run(prepare_demo_audio.prepare(args, "unused-ffmpeg"))
-    assert {path.name: path.read_bytes() for path in destination.iterdir()} == previous
+    backend, original_error = service.backend, service.error
+    assert service.speak("Ordinary reply")
+    assert not service.prepare_demo_speech() and "GROQ_API_KEY" in service.demo_error
+    assert service.backend == backend and service.error == original_error

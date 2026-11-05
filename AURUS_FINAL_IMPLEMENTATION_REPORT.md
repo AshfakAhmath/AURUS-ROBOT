@@ -2,12 +2,12 @@
 
 Date: 2026-11-04 (Asia/Colombo). Implementation and simulation tests only.
 
-**Current behavior update, 2026-11-05:** Sections O, P and Q supersede the earlier
-local-voice and mandatory-full-coverage descriptions. The demo replays prepared
-cloud neural audio offline. Ordinary speech can explicitly select Groq Orpheus
-English with the Troy voice. Runtime movement uses remaining valid sensors by
-default; partial coverage is a warning, and strict coverage is opt-in. Earlier
-sections retain implementation/recovery history for prior revisions.
+**Current behavior update, 2026-11-05:** Section R supersedes O/Q speech and
+cache behavior. Ordinary speech has its previous Piper/Edge/eSpeak selection;
+only the FIT Expo demo requests live Groq Orpheus/Troy narration for each line
+on every run. Saved demo recordings have been removed. Section P's remaining
+valid-sensor policy is unchanged: partial coverage is a warning and strict
+coverage is opt-in. Earlier sections retain the history of prior revisions.
 
 ## A. Overview
 
@@ -843,6 +843,9 @@ policy is loaded. The earlier manual-start preference is preserved.
 
 ## Q. Groq Orpheus Speech Integration — 2026-11-05
 
+**Historical: normal Groq selection and cached demo behavior below were
+superseded by the operator-requested rollback/live-demo change in Section R.**
+
 This follow-up started on `main` at clean commit
 `46359db6e1109d07433118edf3c91ed8d6e65235`. It adds explicit Groq speech selection
 without changing sensor/motor policy, hardware pins or the installed Pi service.
@@ -931,3 +934,104 @@ no runtime requirement or model binary was added.
 Primary references: [Groq Orpheus TTS](https://console.groq.com/docs/text-to-speech/orpheus),
 [Groq English model](https://console.groq.com/docs/model/canopylabs/orpheus-v1-english),
 [Groq Python speech resource in the supported SDK](https://github.com/groq/groq-python/blob/v0.31.0/src/groq/resources/audio/speech.py).
+
+## R. Original Normal Speech Restored; Live Demo Only — 2026-11-05
+
+The operator requested reversal of the general Groq TTS integration, then
+explicitly changed the demo requirement: do not preserve/replay saved recordings;
+call Groq with the predefined messages every time. This section supersedes the
+normal-provider selection, gain and cached-demo descriptions in O/Q.
+The work started from clean `main` at
+`93ea062d1e13e45b045b0a8ca4696df60bf7acf0`.
+
+Normal speech restores the pre-integration implementation from `46359db`:
+Piper first when its model is available, then Edge/eSpeak/visual fallback as
+previously implemented. Ordinary gain and provider-failure recovery are restored.
+`AURUS_TTS_BACKEND`, `GROQ_TTS_MODEL` and `GROQ_TTS_VOICE` no longer select normal
+speech. Ten normal-speech methods were compared as Python ASTs against that
+commit and match: backend selection, health, speak queue, amplification,
+synthesis dispatcher, Piper, eSpeak-file, Edge, local WAV playback and routing.
+The added general speech model health field was removed.
+
+Only the FIT Expo demo uses the optional Groq adapter, initialized lazily when
+the operator starts the demo. Its independent configuration is:
+
+```dotenv
+AURUS_DEMO_TTS_MODEL=canopylabs/orpheus-v1-english
+AURUS_DEMO_TTS_VOICE=troy
+AURUS_DEMO_TTS_GAIN_DB=6
+```
+
+It uses the existing private `GROQ_API_KEY`. Each predefined line queues a fresh
+cloud synthesis request, including repeated identical lines on later runs.
+Lines longer than 200 characters require multiple requests and validated PCM
+joining. There is no text-generation call to rewrite the script and no saved
+audio lookup or local demo-voice fallback. The reviewed prototype introduction,
+Faculty of Information Technology Expo wording, capabilities, hello/greeting
+turns and closing remain unchanged. The same short forward/reverse/turn gestures
+and all sensor/motor policies are retained; no strafing was added.
+
+The shared serialized audio worker generates a temporary WAV, applies only the
+demo's independent peak-limited gain, routes it through Pi/browser/auto, waits
+for scoped operator browser acknowledgement when applicable, then deletes the
+temporary directory. It keeps microphone playback suppression and busy guards
+active during generation/playback. Saved WAVs, preview, manifest, the preparation
+script and the ordinary Groq test command were removed. No new cache is written
+to the project or reused between requests.
+
+Missing demo configuration rejects a start before entering performing mode.
+Cloud/generation/playback failure cancels the demo before later gestures and
+keeps its error separate from ordinary speech health/backend. Stop, E-STOP and
+owner disconnect continue stopping motion immediately. An in-flight HTTP call
+may take its bounded timeout to return; cancellation prevents its result from
+playing and prevents subsequent chunks/actions. Already-started local playback
+retains its prior bounded behavior and may finish its current clip. A cancelled
+or pending audio job keeps subsequent demo starts busy until cleanup completes.
+
+The earlier Pi HTTP 400 output alone did not establish its cause. The adapter
+now identifies HTTP 400 and known `model_terms_required`/terms-acceptance replies
+without exposing arbitrary SDK response text, user input or keys. Model terms
+must be reviewed by the account's appropriate administrator if required; no
+terms were accepted automatically. Live demo still requires internet, account
+model access and quota. No successful live Orpheus generation has been verified
+in this workspace; the operator's previous request was rejected with HTTP 400.
+
+Files modified/deleted in this follow-up:
+
+| File | Change |
+| --- | --- |
+| `src/services/tts_service.py` | Restore normal speech; independent live demo jobs, routing/acknowledgement, gain and temporary cleanup |
+| `src/services/groq_tts_service.py` | Demo-only settings, between-chunk cancellation and actionable sanitized errors |
+| `src/services/exhibition_demo.py` | Queue predefined live narration; remove saved-audio validation; cancel on speech failure |
+| `src/services/demo_script.py` | Preserve text/order; remove cache validator |
+| `src/runtime.py`, `src/web/app.py` | Live-demo composition, acknowledgement and error wording; remove general Groq model telemetry |
+| `.env.example` | Replace general cloud TTS selection with demo-only settings; retain unrelated vision correction and ALSA override |
+| `tests/conftest.py` | Restore prior hardware-simulation fixture; normal TTS no longer needs cloud-selection isolation |
+| `tests/test_exhibition_demo.py`, `tests/test_groq_tts.py` | Replace saved-cache assertions with fresh-request/cleanup/cancel/routing and normal-speech regression coverage |
+| `docs/PI_MANUAL_SETUP.md`, `assets/fit_expo/README.md` | Updated normal-speech rollback and live-demo manual setup |
+| `assets/fit_expo/*.wav`, `assets/fit_expo/manifest.json` | Remove eight recordings including preview, and their manifest |
+| `scripts/prepare_demo_audio.py`, `scripts/check_groq_tts.py` | Remove retired persistent-cache preparation and general cloud speech diagnostic |
+| `AURUS_FINAL_IMPLEMENTATION_REPORT.md` | Current behavior and verification record; prior implementation retained as history |
+
+Actual verification:
+
+- Targeted demo/Groq/remaining-sensor suite: **69 passed**, 4.28 s.
+- Final `python -m pytest -q -rs`: **218 passed, 0 failed, 2 skipped**, 9.34 s.
+  Skips remain the two unavailable-OpenCV cases. The existing pytest-asyncio
+  fixture-loop-scope deprecation warning remains.
+- Python compilation/source parsing passed. Ten original normal-speech method
+  AST comparisons passed against `46359db` after using explicit UTF-8 decoding
+  for the verification script; its initial locale-decoded comparison falsely
+  differed on a Unicode routing docstring. Production code was unaffected.
+- Confirmed no WAV files or manifest remain in `assets/fit_expo`; regression
+  tests confirm fresh calls for repeated text, temporary-file removal, HTTP 400
+  terms redaction, failure recovery without local demo speech, cancellation
+  during an API response, browser ownership/timeout and no movement on failure.
+- Final diff/whitespace verification completed after documentation edits.
+
+All automated verification used mocked API/audio calls and simulated hardware.
+No live speech request, physical playback, GPIO/motor operation, private `.env`
+change, Pi service action, deployment, commit or push was performed. Groq remains
+required for the demo and existing AI features, so its original package/key
+configuration is retained. See `docs/PI_MANUAL_SETUP.md` for the deliberate Pi
+update and `.env` changes; boot startup remains a manual operator action.
