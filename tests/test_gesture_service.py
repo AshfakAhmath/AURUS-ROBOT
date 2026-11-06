@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.services.gesture_service import GestureService, _Scan
+from src.services.gesture_service import GestureService, _ExpoScan, _Scan
 
 
 def _point(x, y):
@@ -35,6 +35,34 @@ def test_stationary_open_palm_and_wave_are_distinct():
     assert scan.observe(_pose("Open_Palm", 0.61), 0.6) is None
     assert not scan.still_palm
     assert scan.observe(_pose("Open_Palm", 0.44), 0.8) == "wave"
+
+
+def test_expo_ignores_held_pose_and_accepts_a_different_gesture():
+    scan = _ExpoScan(after="thumbs-up")
+    assert scan.observe(_pose("Thumb_Up"), 0.0) is None
+    assert scan.observe(_pose("Thumb_Up"), 0.2) is None
+    assert not scan.released
+    assert scan.observe(_pose("Victory"), 0.4) is None
+    assert scan.observe(_pose("Victory"), 0.6) == "peace"
+
+
+def test_expo_releases_only_after_hands_leave_the_frame():
+    scan = _ExpoScan(after="peace")
+    no_hands = SimpleNamespace(hand_landmarks=[], gestures=[])
+    assert scan.observe(no_hands, 0.0) is None
+    assert scan.observe(_pose("Victory"), 0.3) is None
+    assert scan.observe(no_hands, 0.5) is None
+    assert not scan.released
+    assert scan.observe(no_hands, 1.0) is None
+    assert scan.released
+
+
+@pytest.mark.parametrize(("after", "gesture"), [(None, "open-palm"), ("wave", None), ("open-palm", None)])
+def test_expo_open_palm_requires_a_pause_and_does_not_repeat(after, gesture):
+    scan = _ExpoScan(after=after)
+    for timestamp in (0.0, 0.3, 0.6):
+        assert scan.observe(_pose("Open_Palm"), timestamp) is None
+    assert scan.observe(_pose("Open_Palm"), 0.95) == gesture
 
 
 def test_heart_requires_both_hands_and_joined_fingertips():

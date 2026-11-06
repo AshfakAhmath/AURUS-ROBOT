@@ -1,4 +1,4 @@
-"""Recognize a single hand gesture from a short, explicitly requested scan."""
+"""Recognize one hand gesture per bounded camera scan."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import time
 
 log = logging.getLogger(__name__)
 POSES = {"Thumb_Up": "thumbs-up", "Victory": "peace"}
+GESTURES = frozenset((*POSES.values(), "wave", "open-palm", "heart"))
 
 
 def _distance(a, b):
@@ -82,6 +83,30 @@ class _Scan:
         return None
 
 
+class _ExpoScan(_Scan):
+    def __init__(self, after):
+        super().__init__()
+        self.after = after
+        self.empty_since = None
+        self.released = False
+
+    def observe(self, result, timestamp):
+        gesture = super().observe(result, timestamp)
+        if result.hand_landmarks:
+            self.empty_since = None
+        elif self.empty_since is None:
+            self.empty_since = timestamp
+        elif self.after and timestamp - self.empty_since >= 0.4:
+            self.released = True
+
+        if gesture is None and self.still_palm and timestamp - self.palm_started >= 0.9:
+            gesture = "open-palm"
+        # A wave often ends with the same hand held open.
+        if gesture == self.after or (self.after == "wave" and gesture == "open-palm"):
+            return None
+        return gesture
+
+
 class GestureService:
     def __init__(self, vision, model_path: Path):
         self.vision = vision
@@ -109,11 +134,11 @@ class GestureService:
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return self._recognizer.recognize(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
 
-    def scan(self, generation: int) -> tuple[dict, int]:
+    def scan(self, generation: int, *, automatic: bool = False, after: str | None = None) -> tuple[dict, int]:
         if not self._lock.acquire(blocking=False):
             return {"message": "A gesture scan is already running."}, 409
         try:
-            return self._scan(generation)
+            return self._scan(generation, automatic, after)
         except ImportError:
             return {"message": "Gesture recognition needs MediaPipe installed on AURUS."}, 503
         except (OSError, RuntimeError, ValueError):
@@ -122,7 +147,7 @@ class GestureService:
         finally:
             self._lock.release()
 
-    def _scan(self, generation: int) -> tuple[dict, int]:
+    def _scan(self, generation: int, automatic: bool, after: str | None) -> tuple[dict, int]:
         snapshot, jpeg = self.vision.get_fresh_frame()
         if not jpeg or snapshot.generation != generation:
             return {"message": "Turn the camera on and wait for the live preview."}, 409
@@ -133,24 +158,30 @@ class GestureService:
         if self._recognizer is None:
             self._load_model()
 
-        scan = _Scan()
+        scan = _ExpoScan(after) if automatic else _Scan()
         gesture = None
         started = time.monotonic()
         last_timestamp = started
+        # Limit sustained Expo inference to about six samples per second.
+        sample_interval = 0.16 if automatic else 0.0
         while time.monotonic() < started + 3.0:
             snapshot, jpeg = self.vision.get_fresh_frame()
             if not snapshot.enabled or snapshot.generation != generation:
                 break
-            if jpeg and snapshot.timestamp > last_timestamp:
+            if (jpeg and snapshot.timestamp > last_timestamp
+                    and snapshot.timestamp - last_timestamp >= sample_interval):
                 last_timestamp = snapshot.timestamp
                 gesture = scan.observe(self._recognize(jpeg), snapshot.timestamp)
-                if gesture:
+                if gesture or (automatic and scan.released):
                     break
             time.sleep(0.045)
 
         snapshot, jpeg = self.vision.get_fresh_frame()
         if not jpeg or snapshot.generation != generation:
             return {"message": "The camera changed during the scan. Try again when it is ready."}, 409
-        if gesture is None and scan.still_palm:
+        if not automatic and gesture is None and scan.still_palm:
             gesture = "open-palm"
-        return {"gesture": gesture, "generation": generation}, 200
+        result = {"gesture": gesture, "generation": generation}
+        if automatic:
+            result["released"] = scan.released
+        return result, 200

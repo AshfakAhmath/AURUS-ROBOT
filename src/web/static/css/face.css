@@ -196,6 +196,7 @@ body { margin: 0; }
 .display-footer p { margin: 0; font-size: clamp(18px, 4vmin, 42px); font-weight: 550; letter-spacing: .015em; }
 .expression-indicator { width: 3vmin; min-width: 18px; height: 3px; border-radius: 9px; background: var(--glow); }
 .gesture-controls { display: grid; justify-items: center; gap: 8px; text-align: center; color: #b9d0d7; }
+.gesture-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .gesture-controls button {
   min-height: 42px;
   padding: .55rem 1.15rem;
@@ -207,6 +208,7 @@ body { margin: 0; }
   cursor: pointer;
 }
 .gesture-controls button:disabled { opacity: .55; cursor: default; }
+.gesture-controls button[aria-pressed="true"] { background: #77fbe1; color: #071218; }
 
 [data-expression="idle"] .eye { animation: blink 6s infinite; }
 [data-expression="listening"] { --glow: #78dfff; }

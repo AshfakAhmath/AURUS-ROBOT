@@ -10,6 +10,8 @@ import hmac
 from flask import Flask, Response, jsonify, render_template, request
 from flask_socketio import SocketIO, emit
 
+from src.services.gesture_service import GESTURES
+
 
 def create_app(runtime):
     app = Flask(__name__)
@@ -70,7 +72,13 @@ def create_app(runtime):
         generation = data.get("generation")
         if type(generation) is not int:
             return jsonify(message="Wait for the live camera before starting a scan."), 400
-        result, status = runtime.gestures.scan(generation)
+        automatic = data.get("automatic", False)
+        after = data.get("after")
+        if type(automatic) is not bool or (
+            after is not None and not (automatic and isinstance(after, str) and after in GESTURES)
+        ):
+            return jsonify(message="Invalid Expo gesture scan options."), 400
+        result, status = runtime.gestures.scan(generation, automatic=automatic, after=after)
         response = jsonify(result)
         response.cache_control.no_store = True
         return response, status

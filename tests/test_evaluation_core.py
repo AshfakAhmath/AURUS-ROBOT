@@ -1114,6 +1114,7 @@ def test_mascot_display_does_not_claim_operator_connection(expo_runtime):
     assert face.status_code == 200
     assert b"AURUS Mascot Display" in face.data
     assert b"Try a Gesture" in face.data
+    assert b"Expo Auto Mode" in face.data
     assert b"face.js" in face.data and b"socket.io" not in face.data
     assert b"Emergency stop</button>" not in face.data
     assert b'id="face-camera" data-stream-url="/video_feed"' in face.data
@@ -1139,8 +1140,21 @@ def test_mascot_scans_only_after_explicit_request(expo_runtime):
     result = client.post("/face/gesture", json={"generation": 0})
     assert result.json == {"gesture": "peace", "generation": 0}
     assert result.cache_control.no_store
-    expo_runtime.gestures.scan.assert_called_once_with(0)
+    expo_runtime.gestures.scan.assert_called_once_with(0, automatic=False, after=None)
     assert expo_runtime._demo_dashboard_sid is None
+
+
+def test_mascot_expo_scan_passes_the_last_gesture(expo_runtime):
+    expo_runtime.gestures = Mock()
+    expo_runtime.gestures.scan.return_value = {"gesture": None, "generation": 0, "released": True}, 200
+    app, _, _, _ = create_app(expo_runtime)
+    client = app.test_client()
+
+    assert client.post("/face/gesture", json={"generation": 0, "automatic": True, "after": []}).status_code == 400
+    expo_runtime.gestures.scan.assert_not_called()
+    response = client.post("/face/gesture", json={"generation": 0, "automatic": True, "after": "peace"})
+    assert response.json["released"]
+    expo_runtime.gestures.scan.assert_called_once_with(0, automatic=True, after="peace")
 
 
 def test_face_camera_preview_follows_camera_session(expo_runtime):

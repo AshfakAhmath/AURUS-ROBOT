@@ -236,8 +236,8 @@ the install compatible with AURUS's NumPy 1.x dependency.
 .venv/bin/python run.py
 ```
 
-Open **Open Mascot Display** from the dashboard. With the preview live,
-select **Try a Gesture** and show one of these to the camera.
+Open **Open Mascot Display** from the dashboard. With the preview live, select
+**Expo Auto Mode** once. Visitors can then show any of these gestures.
 
 - **Wave** by moving one open hand side to side.
 - **Thumbs-up** by holding one thumb up.
@@ -245,7 +245,11 @@ select **Try a Gesture** and show one of these to the camera.
 - **Open palm** by holding one open hand still, facing the camera.
 - **Peace sign** by raising the index and middle fingers.
 
-The scan runs locally for up to three seconds per tap, with extra time to load
-the model on the first tap. The live preview can stay on between scans. Gesture
-results animate the mascot on that display without issuing motor commands.
-Use **Set name** or say “My name is …” for personal memory.
+Lower both hands out of view briefly before repeating the same gesture. Expo
+mode pauses when the camera goes off or the display tab is hidden and resumes
+when both are ready. Select **Expo Auto Mode** again to end the session. Use
+**Try a Gesture** for a single scan while Expo mode is off.
+
+Scans run locally, with extra time to load the model on the first scan. Gesture
+results animate the mascot. Use **Set name** or say “My name is …” for
+personal memory.

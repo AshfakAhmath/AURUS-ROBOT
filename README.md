@@ -10,7 +10,7 @@ The existing verified motor directions, GPIO pin assignments, ultrasonic wiring,
 - **Autonomous Vision**: While exploring, it takes a photo every 10–12 seconds and uses a current Groq-hosted vision model to narrate its surroundings.
 - **Speech-to-Text**: Uses Groq Whisper Large V3 Turbo, with lazy Vosk fallback when the local model is installed.
 - **Realistic TTS**: Integrated with Microsoft Edge's Read Aloud Neural TTS for nuanced, incredibly realistic robot voices (falling back to Piper/eSpeak if offline).
-- **Mascot Gestures**: Ask the mascot to copy a wave, thumbs-up, two-hand heart, open palm, or peace sign.
+- **Mascot Gestures**: The mascot copies a wave, thumbs-up, two-hand heart, open palm, or peace sign. Expo Auto Mode lets visitors show gestures hands-free.
 - **Persistent Memory**: Share your name to link facts you choose to save in SQLite.
 - **Wake Word**: The Pi listens locally for “Hey AURUS” and variants such as “Hi AURUS” and “Hello AURUS”. The dashboard can also listen through the browser's Web Speech API.
 
@@ -58,11 +58,11 @@ appears below the mascot and clears when playback ends. This includes ordinary
 replies, object announcements and FIT Expo narration, through Pi or PC audio.
 Keep dashboard access on the operator network.
 
-With the live camera ready, select **Try a Gesture** and show one gesture in
-the preview. Hold the pose or wave side to side. For a heart, join your index
-fingertips above your thumbs. AURUS checks gestures locally for up to three
-seconds after each tap. See the [Pi setup guide](docs/PI_MANUAL_SETUP.md#9-mascot-gestures)
-to install the optional recognizer.
+With the live camera ready, select **Expo Auto Mode** once to let visitors show
+gestures while the mascot page is visible. Lower your hands briefly before
+repeating a gesture. Select the mode again to switch it off, or use **Try a
+Gesture** for a single scan. Gesture recognition runs on the Pi. See the
+[Pi setup guide](docs/PI_MANUAL_SETUP.md#9-mascot-gestures) to install the optional recognizer.
 
 With the camera running, hold up a prop and select **Detect Objects** under the
 live feed. AURUS sends one camera frame to Groq Vision and lists the object labels
