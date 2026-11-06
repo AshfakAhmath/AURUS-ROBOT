@@ -286,11 +286,12 @@
             <label for="message" class="sr-only">Message AURUS</label>
             <input id="message" maxlength="1000" autocomplete="off" placeholder="Message AURUS…">
             <div class="composer-actions">
-              <button id="listen" class="icon-button mic" title="Push to talk" aria-label="Push to talk"><span class="mic-icon"></span></button>
-              <button id="browser-mic" class="button browser-mic-btn" title="Toggle continuous browser microphone"><span>🎤</span> Browser Mic</button>
+              <button id="listen" class="icon-button mic" title="Talk using the Pi microphone" aria-label="Talk using the Pi microphone"><span class="mic-icon"></span></button>
+              <button id="browser-mic" class="button browser-mic-btn" title="Toggle continuous browser microphone" aria-pressed="false"><span>🎤</span> Browser Mic</button>
               <button id="send" class="button send-button" aria-label="Send message">Send <span>↗</span></button>
             </div>
           </div>
+          <p id="browser-mic-status" class="muted" role="status" hidden></p>
 
           <div class="memory-row">
             <div class="memory-label"><span class="memory-icon" aria-hidden="true"></span><span>Personal memory</span></div>

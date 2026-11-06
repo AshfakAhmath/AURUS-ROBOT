@@ -7,6 +7,7 @@ let browserAudioPlaying = false;
 let browserAudioCount = 0;
 let sensorControlAuthorized = false;
 let browserMicActive = false;
+let browserMicCapturing = false;
 let demoActive = false;
 let pendingObjectScan = null;
 const demoAudio = new Set();
@@ -83,6 +84,7 @@ socket.on('connect', () => {
   updateScanButton();
 });
 socket.on('disconnect', () => {
+  if (browserMicActive) stopBrowserMic('Dashboard disconnected. Reconnect and turn on Browser Mic again.');
   cameraConnected = false;
   cameraRequested = null;
   renderCamera();
@@ -290,7 +292,7 @@ function renderHealth(health) {
   }
   const keys = ['runtime','motors','sensors','camera','microphone','tts','llm','groq_vision','database','mcp_agent','wake_phrase','estop'];
   $('health').innerHTML = keys.map(key => {
-    const browserVoice = browserMicActive && (key === 'microphone' || key === 'wake_phrase');
+    const browserVoice = browserMicCapturing && (key === 'microphone' || key === 'wake_phrase');
     const value = Boolean(health[key]) || browserVoice;
     const expectedBad = key === 'estop';
     const good = expectedBad ? !value : value;
@@ -410,20 +412,43 @@ function sendText() {
 let recognition = null;
 let wakeArmedUntil = 0;
 let wakeTimeout = null;
+let micStartTimeout = null;
+let browserWakePending = false;
+let browserWakeArmed = false;
 const wakeTargets = ['aurus', 'auris', 'oris', 'aries'];
 
-socket.on('browser_listen_ready', ({seconds = 10}) => {
-  const duration = Math.max(1, Number(seconds) || 10) * 1000;
-  wakeArmedUntil = Date.now() + duration;
-  setBrowserMicLabel(`Listening · ${Math.round(duration / 1000)}s`);
+function setBrowserMicStatus(message) {
+  const status = $('browser-mic-status');
+  status.hidden = !message;
+  status.textContent = message;
+}
+
+function clearBrowserCommand(notify = false) {
+  if (notify && (browserWakePending || browserWakeArmed) && socket.connected) {
+    socket.emit('browser_listen_timeout', {});
+  }
+  browserWakePending = browserWakeArmed = false;
+  wakeArmedUntil = 0;
   clearTimeout(wakeTimeout);
+}
+
+function armBrowserCommand(seconds, fromWake = false) {
+  clearBrowserCommand();
+  browserWakeArmed = fromWake;
+  wakeArmedUntil = Date.now() + seconds * 1000;
+  setBrowserMicLabel(`Listening · ${seconds}s`);
+  setBrowserMicStatus('Speak one message, then pause to send it.');
   wakeTimeout = setTimeout(() => {
-    if (Date.now() >= wakeArmedUntil) {
-      wakeArmedUntil = 0;
-      setBrowserMicLabel('Listening');
-      socket.emit('browser_listen_timeout', {});
-    }
-  }, duration + 50);
+    clearBrowserCommand(true);
+    setBrowserMicLabel('Mic on');
+    setBrowserMicStatus('No message was recognized in time. Click the small mic to try again.');
+  }, seconds * 1000);
+}
+
+socket.on('browser_listen_ready', ({seconds = 10}) => {
+  if (browserMicActive && browserWakePending && !demoActive) {
+    armBrowserCommand(Math.max(1, Number(seconds) || 10), true);
+  }
 });
 
 function editDistance(a, b) {
@@ -515,78 +540,159 @@ function setBrowserMicLabel(label, active = browserMicActive) {
   const btn = $('browser-mic');
   if (!btn) return;
   btn.classList.toggle('active', active);
+  btn.setAttribute('aria-pressed', String(active));
   btn.innerHTML = `<span>${active ? '🔴' : '🎤'}</span> ${label}`;
+  const input = $('listen');
+  input.title = active ? 'Talk using the laptop microphone' : 'Talk using the Pi microphone';
+  input.setAttribute('aria-label', input.title);
 }
 
-function initBrowserMic() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    alert("Your browser doesn't support Web Speech API. Try Chrome.");
+function startBrowserRecognition() {
+  setBrowserMicLabel('Starting mic');
+  setBrowserMicStatus('Waiting for the browser to start microphone capture.');
+  clearTimeout(micStartTimeout);
+  micStartTimeout = setTimeout(() => {
+    stopBrowserMic('Microphone capture did not start. Check this site’s microphone permission and the laptop input device.');
+  }, 15000);
+  try {
+    recognition.start();
+  } catch (error) {
+    stopBrowserMic(`Could not start browser recognition (${error.name}). Check microphone permission and try again.`);
+  }
+}
+
+function stopBrowserMic(message = '') {
+  const session = recognition;
+  recognition = null;
+  browserMicActive = browserMicCapturing = false;
+  clearTimeout(micStartTimeout);
+  clearBrowserCommand(true);
+  setBrowserMicLabel('Browser Mic');
+  setBrowserMicStatus(message);
+  if (session) session.abort();
+}
+
+function toggleBrowserMic() {
+  if (browserMicActive) {
+    stopBrowserMic();
     return;
   }
-  if (!window.isSecureContext && !['localhost', '127.0.0.1'].includes(location.hostname)) {
-    $('error').textContent = 'Browser microphone permission may require HTTPS for a remote dashboard.';
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    setBrowserMicStatus('Speech recognition is unavailable in this browser. Try Chrome or use the Pi microphone.');
+    return;
   }
-  recognition = new SpeechRecognition();
-  recognition.continuous = true;
-  recognition.interimResults = false;
-  recognition.lang = 'en-US';
+  if (!socket.connected) {
+    setBrowserMicStatus('Connect the dashboard before starting Browser Mic.');
+    return;
+  }
+  const session = new SpeechRecognition();
+  recognition = session;
+  browserMicActive = true;
+  session.continuous = true;
+  session.interimResults = false;
+  session.lang = 'en-US';
+  let missedSpeech = false;
 
-  recognition.onresult = (event) => {
+  session.onaudiostart = () => {
+    if (recognition !== session) return;
+    clearTimeout(micStartTimeout);
+    browserMicCapturing = true;
+    if (browserWakePending) {
+      setBrowserMicLabel('Wake heard');
+      setBrowserMicStatus('Wait for AURUS to finish saying “I’m listening.”');
+    } else if (Date.now() < wakeArmedUntil) {
+      setBrowserMicLabel(`Listening · ${Math.ceil((wakeArmedUntil - Date.now()) / 1000)}s`);
+      setBrowserMicStatus('Speak one message, then pause to send it.');
+    } else {
+      setBrowserMicLabel('Mic on');
+      setBrowserMicStatus(missedSpeech
+        ? 'No speech detected. Check the selected laptop microphone, then try again.'
+        : 'Laptop mic open. Say “Hey AURUS” or click the small mic to speak directly.');
+    }
+  };
+  session.onspeechstart = () => {
+    if (recognition === session && !robotSpeaking && !demoActive && !browserWakePending) {
+      setBrowserMicStatus('Speech detected. Pause when you finish.');
+    }
+  };
+  session.onresult = (event) => {
+    if (recognition !== session || !socket.connected || browserWakePending) return;
     for (let i = event.resultIndex; i < event.results.length; i++) {
       if (event.results[i].isFinal) {
-        const transcript = event.results[i][0].transcript.toLowerCase().trim();
+        const transcript = event.results[i][0].transcript.trim();
         if (!transcript || robotSpeaking || demoActive) continue;
+        missedSpeech = false;
 
         if (Date.now() < wakeArmedUntil) {
-          wakeArmedUntil = 0;
-          clearTimeout(wakeTimeout);
-          setBrowserMicLabel('Listening');
+          clearBrowserCommand();
+          setBrowserMicLabel('Mic on');
+          setBrowserMicStatus('Message sent. Say “Hey AURUS” or click the small mic for another message.');
           socket.emit('send_text', {text: transcript, source: 'browser-mic'});
-          continue;
+          return;
         }
 
         const match = wakeMatch(transcript);
         if (match.matched) {
-          wakeArmedUntil = 0;
+          clearBrowserCommand();
+          browserWakePending = true;
           setBrowserMicLabel('Wake heard');
+          setBrowserMicStatus('Wait for AURUS to finish saying “I’m listening.”');
+          wakeTimeout = setTimeout(() => {
+            clearBrowserCommand(true);
+            setBrowserMicLabel('Mic on');
+            setBrowserMicStatus('AURUS did not open the listening window. Try the small mic button.');
+          }, 30000);
           socket.emit('browser_wake_detected', {});
+          return;
         }
+        setBrowserMicStatus('Speech recognized. Say “Hey AURUS” or click the small mic to send a message.');
       }
     }
   };
 
-  recognition.onend = () => {
-    if (browserMicActive) {
-      try { recognition.start(); } catch(e) {}
+  session.onend = () => {
+    if (recognition !== session) return;
+    if (!browserMicCapturing) {
+      stopBrowserMic('The browser ended recognition before opening the microphone. Check site permission and input device.');
+      return;
     }
+    browserMicCapturing = false;
+    startBrowserRecognition();
   };
 
-  recognition.onerror = (e) => {
-    console.warn("[Browser Mic Error]", e.error);
-    if (['not-allowed', 'service-not-allowed', 'audio-capture', 'network'].includes(e.error)) {
-      browserMicActive = false;
-      $('error').textContent = `Browser microphone stopped: ${e.error}. Check permission, HTTPS, and network access.`;
-      setBrowserMicLabel('Browser Mic', false);
-    }
+  session.onnomatch = () => {
+    if (recognition === session) setBrowserMicStatus('The browser heard audio but could not recognize the words.');
   };
+  session.onerror = ({error}) => {
+    if (recognition !== session) return;
+    if (error === 'no-speech' && browserMicCapturing) {
+      missedSpeech = true;
+      setBrowserMicStatus('No speech detected. Check the selected laptop microphone and try again.');
+      return;
+    }
+    const hints = {
+      'not-allowed': window.isSecureContext ? 'Allow the microphone in site permissions.' : 'Open the dashboard over HTTPS or localhost, then allow the microphone.',
+      'service-not-allowed': 'Try Chrome or use the Pi microphone.',
+      'audio-capture': 'Check the laptop microphone input and permissions.',
+      'network': 'Check the laptop’s internet connection to the browser recognition service.',
+      'no-speech': 'Check the selected laptop microphone and try again.',
+    };
+    stopBrowserMic(`Browser recognition stopped (${error}). ${hints[error] || 'Turn Browser Mic on to retry.'}`);
+  };
+  startBrowserRecognition();
 }
 
-function toggleBrowserMic() {
-  if (!recognition) initBrowserMic();
-  if (!recognition) return;
-
-  browserMicActive = !browserMicActive;
-  const btn = $('browser-mic');
-  if (browserMicActive) {
-    setBrowserMicLabel('Listening');
-    try { recognition.start(); } catch(e) {}
-  } else {
-    wakeArmedUntil = 0;
-    clearTimeout(wakeTimeout);
-    setBrowserMicLabel('Browser Mic', false);
-    recognition.stop();
+function talkNow() {
+  if (!browserMicActive) {
+    socket.emit('start_listening', {});
+    return;
   }
+  if (!browserMicCapturing || !socket.connected || robotSpeaking || demoActive || browserWakePending) {
+    setBrowserMicStatus('Wait until the laptop mic is open and AURUS is idle, then try again.');
+    return;
+  }
+  armBrowserCommand(10, browserWakeArmed);
 }
 
 $('send').onclick = sendText;
@@ -600,7 +706,7 @@ document.querySelectorAll('[data-sensor]').forEach(input => {
 });
 if ($('browser-mic')) $('browser-mic').onclick = toggleBrowserMic;
 $('message').addEventListener('keydown', e => { if (e.key === 'Enter') sendText(); });
-$('listen').onclick = () => socket.emit('start_listening', {});
+$('listen').onclick = talkNow;
 $('estop').onclick = () => socket.emit('stop', {});
 $('clear-estop').onclick = () => socket.emit('clear_estop', {});
 $('showcase').onclick = () => {
