@@ -1,3 +1,6 @@
+import os
+import signal
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -17,6 +20,16 @@ def _pose(category, wrist_x=0.45):
         hand_landmarks=[hand],
         gestures=[[SimpleNamespace(category_name=category, score=0.95)]],
     )
+
+
+def _crash_on_start(connection, model_path):
+    os._exit(128 + signal.SIGILL)
+
+
+def _crash_on_frame(connection, model_path):
+    connection.send(("ok", None))
+    connection.recv_bytes()
+    os._exit(128 + signal.SIGILL)
 
 
 @pytest.mark.parametrize(("category", "gesture"), [("Thumb_Up", "thumbs-up"), ("Victory", "peace")])
@@ -87,10 +100,10 @@ def test_camera_off_or_stale_generation_skips_model_loading(tmp_path):
         (SimpleNamespace(enabled=True, generation=2), b"new-frame"),
     ]
     service = GestureService(camera, tmp_path / "gesture_recognizer.task")
-    service._load_model = Mock()
+    service._start_worker = Mock()
     assert service.scan(1)[1] == 409
     assert service.scan(1)[1] == 409
-    service._load_model.assert_not_called()
+    service._start_worker.assert_not_called()
 
 
 def test_camera_change_during_scan_discards_result(tmp_path):
@@ -103,7 +116,30 @@ def test_camera_change_during_scan_discards_result(tmp_path):
         (SimpleNamespace(enabled=True, generation=1), b"new"),
     ]
     service = GestureService(camera, model)
-    service._load_model = Mock()
+    service._start_worker = Mock()
     service._recognize = Mock()
     assert service.scan(0)[1] == 409
     service._recognize.assert_not_called()
+
+
+@pytest.mark.parametrize("worker", [_crash_on_start, _crash_on_frame])
+def test_native_crash_only_disables_gestures(worker, monkeypatch, tmp_path):
+    model = tmp_path / "gesture_recognizer.task"
+    model.touch()
+    camera = Mock()
+    camera.get_fresh_frame.side_effect = lambda: (
+        SimpleNamespace(enabled=True, generation=0, timestamp=time.monotonic()), b"frame",
+    )
+    monkeypatch.setattr("src.services.gesture_service.serve_gestures", worker)
+    service = GestureService(camera, model)
+    try:
+        result, status = service.scan(0)
+        assert status == 503
+        assert "incompatible with this CPU" in result["message"]
+        assert service._worker is None
+        assert service._connection is None
+        service._start_worker = Mock()
+        assert service.scan(0) == (result, status)
+        service._start_worker.assert_not_called()
+    finally:
+        service.stop()

@@ -232,6 +232,7 @@ class RobotRuntime:
             self.sensor_sampler.start()
             self.arbiter.start()
             self.vision.start()
+            self.gestures.start()
             self.tts.start()
             self.speech.start(self._wake_detected)
             self.behavior.start()
@@ -256,6 +257,7 @@ class RobotRuntime:
             ("sensor sampler", self.sensor_sampler.stop),
             ("tts", self.tts.stop),
             ("motor driver", self.driver.cleanup),
+            ("gesture worker", self.gestures.stop),
         )
         for component, action in shutdown_steps:
             try:

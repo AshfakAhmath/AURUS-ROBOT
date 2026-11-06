@@ -5,8 +5,12 @@ from __future__ import annotations
 from math import hypot
 from pathlib import Path
 import logging
+import multiprocessing
+import signal
 import threading
 import time
+
+from src.services.gesture_worker import serve_gestures
 
 
 log = logging.getLogger(__name__)
@@ -111,37 +115,101 @@ class GestureService:
     def __init__(self, vision, model_path: Path):
         self.vision = vision
         self.model_path = model_path
-        self._recognizer = None
         self._lock = threading.Lock()
+        self._stopping = threading.Event()
+        self._worker = None
+        self._connection = None
+        self._unavailable = None
 
-    def _load_model(self):
-        import mediapipe as mp
+    def start(self):
+        with self._lock:
+            self._unavailable = None
+            self._stopping.clear()
 
-        options = mp.tasks.vision.GestureRecognizerOptions(
-            base_options=mp.tasks.BaseOptions(model_asset_path=str(self.model_path)),
-            num_hands=2,
+    def stop(self):
+        self._stopping.set()
+        with self._lock:
+            self._close_worker()
+
+    def _start_worker(self):
+        if self._worker is not None:
+            return
+        context = multiprocessing.get_context("spawn")
+        parent, child = context.Pipe()
+        worker = context.Process(
+            target=serve_gestures, args=(child, self.model_path),
+            name="aurus-gesture-worker", daemon=True,
         )
-        self._recognizer = mp.tasks.vision.GestureRecognizer.create_from_options(options)
+        try:
+            worker.start()
+        except Exception:
+            parent.close()
+            raise
+        finally:
+            child.close()
+        self._worker, self._connection = worker, parent
+        self._worker_reply(timeout=10.0)
+
+    def _worker_reply(self, timeout):
+        deadline = time.monotonic() + timeout
+        while not self._stopping.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Gesture worker did not respond")
+            if self._connection.poll(min(remaining, 0.1)):
+                status, result = self._connection.recv()
+                if status == "missing":
+                    raise ImportError(result)
+                if status == "error":
+                    raise RuntimeError(result)
+                return result
+        raise RuntimeError("Gesture recognition is stopping")
+
+    def _close_worker(self):
+        worker, self._worker = self._worker, None
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
+        if worker is None:
+            return None
+        worker.join(0.2)
+        exitcode = worker.exitcode
+        if exitcode is None:
+            worker.terminate()
+            worker.join(0.3)
+        if worker.is_alive():
+            worker.kill()
+            worker.join()
+        worker.close()
+        return exitcode
 
     def _recognize(self, jpeg):
-        import cv2
-        import mediapipe as mp
-        import numpy as np
-
-        frame = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if frame is None:
-            raise ValueError("Invalid gesture scan frame")
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return self._recognizer.recognize(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+        self._connection.send_bytes(jpeg)
+        return self._worker_reply(timeout=2.0)
 
     def scan(self, generation: int, *, automatic: bool = False, after: str | None = None) -> tuple[dict, int]:
         if not self._lock.acquire(blocking=False):
             return {"message": "A gesture scan is already running."}, 409
         try:
+            if self._stopping.is_set():
+                return {"message": "Gesture recognition is stopping."}, 503
+            if self._unavailable:
+                return {"message": self._unavailable}, 503
             return self._scan(generation, automatic, after)
-        except ImportError:
-            return {"message": "Gesture recognition needs MediaPipe installed on AURUS."}, 503
-        except (OSError, RuntimeError, ValueError):
+        except ImportError as exc:
+            self._close_worker()
+            log.warning("Gesture dependency could not load: %s", exc)
+            return {"message": "Gesture dependencies could not load. Check the Pi gesture setup and logs."}, 503
+        except (OSError, EOFError) as exc:
+            exitcode = self._close_worker()
+            log.error("Gesture worker stopped (exit code %s): %s", exitcode, exc)
+            if exitcode in (-signal.SIGILL, 128 + signal.SIGILL):
+                self._unavailable = "The gesture library is incompatible with this CPU. Check the Pi gesture setup."
+            else:
+                self._unavailable = "The gesture worker stopped. Check the Pi logs before restarting AURUS."
+            return {"message": self._unavailable}, 503
+        except (RuntimeError, ValueError):
+            self._close_worker()
             log.exception("Gesture scan failed")
             return {"message": "Gesture recognition could not start. Check the model and Pi logs."}, 503
         finally:
@@ -155,8 +223,7 @@ class GestureService:
             return {"message": "The gesture model is missing on AURUS."}, 503
 
         # Model loading happens on the first request, before the scan window.
-        if self._recognizer is None:
-            self._load_model()
+        self._start_worker()
 
         scan = _ExpoScan(after) if automatic else _Scan()
         gesture = None
@@ -164,7 +231,7 @@ class GestureService:
         last_timestamp = started
         # Limit sustained Expo inference to about six samples per second.
         sample_interval = 0.16 if automatic else 0.0
-        while time.monotonic() < started + 3.0:
+        while not self._stopping.is_set() and time.monotonic() < started + 3.0:
             snapshot, jpeg = self.vision.get_fresh_frame()
             if not snapshot.enabled or snapshot.generation != generation:
                 break
@@ -176,6 +243,8 @@ class GestureService:
                     break
             time.sleep(0.045)
 
+        if self._stopping.is_set():
+            return {"message": "Gesture recognition is stopping."}, 503
         snapshot, jpeg = self.vision.get_fresh_frame()
         if not jpeg or snapshot.generation != generation:
             return {"message": "The camera changed during the scan. Try again when it is ready."}, 409
