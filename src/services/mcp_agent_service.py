@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import json
 import os
+import re
 import threading
 import time
 from typing import Any
@@ -17,6 +19,39 @@ try:
     from groq import Groq
 except ImportError:
     Groq = None
+
+
+OBJECT_SCAN_COMMANDS = (
+    "describe what you see",
+    "describe what you can see",
+    "describe the objects you see",
+    "tell me what you see",
+    "tell me what you can see",
+    "what objects do you see",
+    "what objects can you see",
+    "detect objects",
+    "identify this object",
+    "guess this object",
+)
+
+
+def matches_object_scan_command(text: str) -> bool:
+    words = re.findall(r"[a-z]+", text.lower())
+    phrase = " ".join("you" if word == "u" else word for word in words)
+    phrase = re.sub(r"^(?:(?:hey )?aurus )?(?:(?:can|could|would|will) you )?(?:please )?", "", phrase)
+    phrase = phrase.removesuffix(" please")
+    words = phrase.split()
+    for command in OBJECT_SCAN_COMMANDS:
+        if phrase == command:
+            return True
+        expected = command.split()
+        # Match complete phrases and require each word to stay close to its role.
+        if (len(words) == len(expected)
+                and SequenceMatcher(None, phrase, command).ratio() >= 0.88
+                and all(SequenceMatcher(None, actual, target).ratio() >= 0.65
+                        for actual, target in zip(words, expected))):
+            return True
+    return False
 
 
 # Standard OpenAI/Groq Tool Schemas mapping to AURUS MCP capabilities
@@ -100,6 +135,14 @@ AURUS_MCP_TOOLS = [
         "function": {
             "name": "read_sensors",
             "description": "Read all 5 ultrasonic distance sensors in centimeters and check if front/rear are clear.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "detect_objects",
+            "description": "Scan the current camera frame and list visible objects. Use when asked to describe what you see or identify objects.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -208,7 +251,7 @@ class MCPAgentService:
     def busy(self) -> bool:
         return self._execution_lock.locked()
 
-    def execute_command(self, user_command: str) -> dict:
+    def execute_command(self, user_command: str, *, source: str = "agent") -> dict:
         if not self._execution_lock.acquire(blocking=False):
             msg = "The MCP Agent is already executing a command. Stop it or wait for it to finish."
             self.runtime.emit(
@@ -225,12 +268,17 @@ class MCPAgentService:
         try:
             if getattr(self.runtime, "demo_active", False):
                 return {"status": "error", "message": "Stop the FIT Expo demo before running the MCP agent."}
-            return self._execute_command(user_command)
+            return self._execute_command(user_command, source)
         finally:
             self._execution_lock.release()
 
-    def _execute_command(self, user_command: str) -> dict:
-        """Executes a natural language instructions using Groq tool calling loop."""
+    def _execute_command(self, user_command: str, source: str) -> dict:
+        """Run recognized commands directly and use Groq for general tool planning."""
+        if matches_object_scan_command(user_command):
+            detection = json.loads(self._dispatch_tool("detect_objects", {}))
+            provider = "groq-vision" if detection["status"] == "ok" else "local"
+            response = self.runtime._announce(detection["message"], source, user_command, provider)
+            return {**detection, **response}
         if not self._client:
             msg = "⚡ Groq MCP Agent is unavailable. Please check that 'groq' is installed and GROQ_API_KEY is set in your .env file."
             self.runtime.emit(
@@ -262,8 +310,8 @@ class MCPAgentService:
             "ultrasonic sensors, a camera, text-to-speech, and persistent SQLite memory. "
             "When given a goal, invoke the appropriate tools to accomplish it safely. "
             "Always check sensors if safety or obstacles are mentioned. Keep verbal speech concise and warm. "
-            "For any question about what you see or the environment, call capture_image and report its "
-            "description without inventing or adding visual details. "
+            "For requests to describe what you see or identify visible objects, call detect_objects. "
+            "Use capture_image for broader scene descriptions. Report only what the selected tool returns. "
             "IMPORTANT: Always use native JSON tool calls. NEVER output raw <function> tags in your response text. "
             "If the user just says 'hi', use the speak_text tool to greet them."
             " A blocked tool result cancels this entire objective: never retry, reroute, or resume. "
@@ -565,6 +613,9 @@ class MCPAgentService:
                     "sensors": data,
                 }, allow_nan=False)
 
+            elif name == "detect_objects":
+                return json.dumps(self.runtime.detect_objects())
+
             elif name == "capture_image":
                 snapshot = self.runtime.vision.get_snapshot()
                 if not snapshot.enabled:
@@ -670,6 +721,8 @@ class MCPAgentService:
 
     def route_intent(self, text: str) -> str:
         """Lightweight semantic router to decide if command is an ACTION or CHAT."""
+        if matches_object_scan_command(text):
+            return "ACTION"
         normalized = " ".join(text.lower().split())
         action_terms = (
             "move", "drive", "go forward", "go backward", "reverse", "turn left",

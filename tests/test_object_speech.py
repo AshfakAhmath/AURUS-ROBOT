@@ -10,9 +10,54 @@ import wave
 import numpy as np
 import pytest
 
+from src.services.mcp_agent_service import matches_object_scan_command
 from src.services.tts_service import DemoSpeech, TTSService
 from src.web.app import create_app
 from tests.test_evaluation_core import expo_runtime, mock_object_completion
+
+
+@pytest.mark.parametrize('command', [
+    'Describe what you see.',
+    'Please desribe waht u see.',
+    'Could you describe what you can see?',
+])
+def test_dashboard_chat_routes_object_commands_to_one_scan(expo_runtime, monkeypatch, command):
+    create = mock_object_completion(expo_runtime, '{"objects":["water bottle"]}')
+    expo_runtime.tts.speak = Mock(return_value=True)
+    planner = Mock(side_effect=AssertionError('Recognized scan commands do not require tool planning'))
+    expo_runtime.mcp_agent._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=planner)))
+    app, socketio, _, _ = create_app(expo_runtime)
+    monkeypatch.setattr(socketio, 'start_background_task', lambda run, *args: run(*args))
+    operator = socketio.test_client(app)
+    try:
+        operator.get_received()
+        operator.emit('send_text', {'text': command})
+        replies = [event['args'][0] for event in operator.get_received() if event['name'] == 'conversation']
+        assert len(replies) == 1
+        assert replies[0]['transcript'] == command
+        assert replies[0]['response'] == 'I see water bottle.'
+        assert replies[0]['provider'] == 'groq-vision'
+        assert create.call_args.kwargs['response_format'] == {'type': 'json_object'}
+        create.assert_called_once()
+        expo_runtime.tts.speak.assert_called_once_with('I see water bottle.')
+        planner.assert_not_called()
+    finally:
+        operator.disconnect()
+
+
+def test_mcp_object_command_uses_shared_camera_off_guard(expo_runtime):
+    create = mock_object_completion(expo_runtime, '{"objects":["water bottle"]}')
+    expo_runtime.vision.set_enabled(False)
+    result = expo_runtime.mcp_agent.execute_command('Describe what you see')
+    assert result['status'] == 'error' and 'switched off' in result['response']
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize('text', [
+    "Don't describe what you see", 'Describe what you do', 'How do I detect objects?',
+])
+def test_fuzzy_scan_requires_an_object_command(text):
+    assert not matches_object_scan_command(text)
 
 
 @pytest.mark.parametrize('labels,spoken', [

@@ -21,7 +21,7 @@ from src.services.speech_service import SpeechService
 from src.services.tts_service import TTSService
 from src import config
 from src.services.vision_service import VisionService
-from src.services.mcp_agent_service import MCPAgentService
+from src.services.mcp_agent_service import MCPAgentService, matches_object_scan_command
 from src.services.groq_vision_service import GroqVisionService
 from src.services.exhibition_demo import ExhibitionDemo
 
@@ -652,10 +652,8 @@ class RobotRuntime:
                 response = f"I recognize you as {person.name}, but you have not taught me a fact yet."
             return self._announce(response, source, clean, "local")
 
-        if lower.rstrip(".?!") in ("detect objects", "identify this object", "guess this object"):
-            detection = self.detect_objects()
-            provider = "groq-vision" if detection["status"] == "ok" else "local"
-            return self._announce(detection["message"], source, clean, provider)
+        if matches_object_scan_command(clean):
+            return self.mcp_agent.execute_command(clean, source=source)
 
         visual_questions = (
             "what do you see",
