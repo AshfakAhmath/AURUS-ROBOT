@@ -28,6 +28,7 @@ def create_app(runtime):
     sensor_token = os.getenv("AURUS_SENSOR_OPERATOR_TOKEN", "")
     browser_speakers: set[str] = set()
     active_text_requests = 0
+    update_demo_dashboard = getattr(runtime, "set_demo_dashboard_client", None)
 
     def event_sink(event, data):
         # Demo browser audio belongs to the operator who started the run.
@@ -75,7 +76,8 @@ def create_app(runtime):
     def on_connect():
         with clients_lock:
             clients.add(request.sid)
-            runtime._demo_dashboard_sid = request.sid
+            if callable(update_demo_dashboard):
+                update_demo_dashboard(request.sid, True)
             runtime.dashboard_connected(True)
         emit("system_health", runtime.health())
         emit("telemetry", runtime.telemetry())
@@ -86,6 +88,8 @@ def create_app(runtime):
     def on_disconnect():
         with clients_lock:
             clients.discard(request.sid)
+            if callable(update_demo_dashboard):
+                update_demo_dashboard(request.sid, False)
             sensor_operators.discard(request.sid)
             browser_speakers.discard(request.sid)
             speech = getattr(runtime, "speech", None)
@@ -95,11 +99,10 @@ def create_app(runtime):
         clear_caption = getattr(getattr(runtime, "tts", None), "clear_browser_audio", None)
         if callable(clear_caption):
             clear_caption(request.sid)
-        demo = getattr(runtime, "demo", None)
-        if demo is not None:
-            demo.owner_disconnected(request.sid)
-        if getattr(runtime, "_demo_dashboard_sid", None) == request.sid:
-            runtime._demo_dashboard_sid = next(iter(clients), None)
+        if not callable(update_demo_dashboard):
+            demo = getattr(runtime, "demo", None)
+            if demo is not None:
+                demo.owner_disconnected(request.sid)
 
     @socketio.on("demo_audio_finished")
     def demo_audio_finished(data):
@@ -228,19 +231,21 @@ def create_app(runtime):
 
     @socketio.on("browser_wake_detected")
     def browser_wake_detected(_data=None):
-        if not runtime.browser_wake_detected():
-            emit("command_error", {"message": "Wake acknowledgement is unavailable while E-STOP is latched."})
+        if not runtime.browser_wake_detected(request.sid):
+            emit("command_error", {"message": "AURUS cannot listen right now. Finish the current activity or check E-STOP."})
 
     @socketio.on("browser_listen_timeout")
     def browser_listen_timeout(_data=None):
-        runtime.browser_listening_finished()
+        runtime.browser_listening_finished(request.sid)
 
-    def run_text_request(handler, text):
+    def run_text_request(handler, text, owner_sid):
         nonlocal active_text_requests
         with clients_lock:
+            if owner_sid not in clients:
+                return
             active_text_requests += 1
         try:
-            handler(text)
+            handler(text, owner_sid=owner_sid)
         finally:
             with clients_lock:
                 active_text_requests -= 1
@@ -254,7 +259,7 @@ def create_app(runtime):
             source = "text"
         if text:
             handler = runtime.handle_browser_speech if source == "browser-mic" else runtime.handle_text
-            socketio.start_background_task(run_text_request, handler, text)
+            socketio.start_background_task(run_text_request, handler, text, request.sid)
 
     @socketio.on("detect_objects")
     def detect_objects(_data=None):

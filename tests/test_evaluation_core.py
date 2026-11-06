@@ -604,6 +604,7 @@ class FakeRuntimeArbiter:
 
 class RuntimeHarness(RobotRuntime):
     def __init__(self):
+        self._lock = threading.RLock()
         self.arbiter = FakeRuntimeArbiter()
         self.actions = []
         self.repository = self
@@ -836,6 +837,173 @@ def expo_runtime(tmp_path, monkeypatch):
     runtime.vision._snapshot = VisionSnapshot(timestamp=time.monotonic(), healthy=True)
     runtime.vision._jpeg = b"current-frame"
     return runtime
+
+
+@pytest.mark.parametrize("source, transcript", [
+    ("text", "Introduce yourself!"),
+    ("browser-mic", "Could you please introduce yourself to everyone?"),
+])
+def test_dashboard_introduction_starts_demo_for_requesting_client(expo_runtime, monkeypatch, source, transcript):
+    runtime = expo_runtime
+    monkeypatch.setattr(runtime.tts, "prepare_demo_speech", lambda: True)
+    monkeypatch.setattr(runtime.tts, "speak", lambda *args, **kwargs: False)
+    monkeypatch.setattr(runtime.demo, "_run", lambda: None)
+    monkeypatch.setattr(runtime, "_announce", Mock())
+    app, socketio, _, _ = create_app(runtime)
+    monkeypatch.setattr(socketio, "start_background_task", lambda run, *args: run(*args))
+    operator = socketio.test_client(app)
+    operator_sid = runtime._demo_dashboard_sid
+    visitor = socketio.test_client(app)
+    try:
+        if source == "browser-mic":
+            operator.emit("browser_wake_detected", {})
+            assert runtime.arbiter.mode == RobotMode.LISTENING
+            assert any(event["name"] == "browser_listen_ready" for event in operator.get_received())
+            assert all(event["name"] != "browser_listen_ready" for event in visitor.get_received())
+        operator.emit("send_text", {"text": transcript, "source": source})
+        assert runtime.demo.active
+        assert runtime.arbiter.mode == RobotMode.PERFORMING
+        assert runtime.demo._owner_sid == operator_sid
+        runtime._announce.assert_not_called()
+    finally:
+        operator.disconnect()
+        visitor.disconnect()
+        if runtime.demo._thread:
+            runtime.demo._thread.join(1)
+
+
+def test_local_transcription_can_start_demo(expo_runtime, monkeypatch):
+    runtime = expo_runtime
+    monkeypatch.setattr(runtime.tts, "prepare_demo_speech", lambda: True)
+    monkeypatch.setattr(runtime.demo, "_run", lambda: None)
+    monkeypatch.setattr(runtime.speech, "_transcribe", lambda _: "Please introduce yourself.")
+    monkeypatch.setattr(runtime, "_announce", Mock())
+    runtime.arbiter.set_mode(RobotMode.LISTENING)
+    finished = threading.Event()
+
+    def deliver(text, error):
+        try:
+            assert runtime.speech.processing
+            assert not runtime.speech.listening
+            runtime._speech_result(text, error)
+        finally:
+            finished.set()
+
+    runtime.speech._complete_capture(deliver, b"pcm")
+    assert finished.wait(2)
+    assert runtime.demo.active
+    assert runtime.arbiter.mode == RobotMode.PERFORMING
+    runtime._announce.assert_not_called()
+    runtime.stop_exhibition_demo()
+    runtime.demo._thread.join(1)
+
+
+@pytest.mark.parametrize("mode", [RobotMode.ESTOP, RobotMode.LISTENING, RobotMode.IDLE])
+def test_chat_introduction_keeps_demo_safety_guards(expo_runtime, monkeypatch, mode):
+    runtime = expo_runtime
+    monkeypatch.setattr(runtime.tts, "prepare_demo_speech", Mock(return_value=True))
+    if mode == RobotMode.ESTOP:
+        runtime.arbiter.emergency_stop()
+    else:
+        runtime.arbiter.set_mode(mode)
+    if mode == RobotMode.IDLE:
+        runtime.speech._pending_callback = Mock()
+    monkeypatch.setattr(runtime, "_announce", Mock())
+    assert runtime.handle_text("Introduce yourself.")["status"] == "error"
+    assert runtime.arbiter.mode == mode
+    assert not runtime.demo.active
+    runtime.tts.prepare_demo_speech.assert_not_called()
+
+
+def test_mentioning_an_introduction_does_not_start_the_demo(expo_runtime, monkeypatch):
+    start = Mock()
+    monkeypatch.setattr(expo_runtime, "start_exhibition_demo", start)
+    monkeypatch.setattr(expo_runtime, "_announce", Mock())
+    monkeypatch.setattr(expo_runtime.mcp_agent, "execute_command", Mock(return_value={}))
+    expo_runtime.handle_text("Don't introduce yourself.")
+    start.assert_not_called()
+
+
+def test_browser_command_window_is_owned_by_the_waking_client(expo_runtime, monkeypatch):
+    runtime = expo_runtime
+    monkeypatch.setattr(runtime.tts, "speak", lambda *args, **kwargs: False)
+    monkeypatch.setattr(runtime.tts, "prepare_demo_speech", Mock(return_value=True))
+    monkeypatch.setattr(runtime.demo, "_run", lambda: None)
+    app, socketio, _, _ = create_app(runtime)
+    monkeypatch.setattr(socketio, "start_background_task", lambda run, *args: run(*args))
+    operator, visitor = socketio.test_client(app), socketio.test_client(app)
+    try:
+        operator.emit("browser_wake_detected", {})
+        visitor.emit("send_text", {"text": "Introduce yourself.", "source": "browser-mic"})
+        visitor.emit("browser_listen_timeout", {})
+        assert runtime.arbiter.mode == RobotMode.LISTENING
+        assert not runtime.demo.active
+        runtime.tts.prepare_demo_speech.assert_not_called()
+        operator.disconnect()
+        assert runtime.arbiter.mode == RobotMode.IDLE
+    finally:
+        if operator.is_connected():
+            operator.disconnect()
+        visitor.disconnect()
+
+
+def test_voice_stop_with_punctuation_stops_demo(expo_runtime, monkeypatch):
+    runtime = expo_runtime
+    monkeypatch.setattr(runtime, "_announce", Mock())
+    monkeypatch.setattr(runtime.tts, "prepare_demo_speech", lambda: True)
+    monkeypatch.setattr(runtime.demo, "_run", lambda: None)
+    assert runtime.start_exhibition_demo()
+    runtime.handle_browser_speech("Stop.")
+    assert runtime.demo.snapshot()["status"] == "cancelled"
+    assert runtime.arbiter.mode == RobotMode.IDLE
+    runtime.demo._thread.join(1)
+
+
+def test_queued_intro_from_disconnected_dashboard_does_not_start_demo(expo_runtime, monkeypatch):
+    runtime = expo_runtime
+    monkeypatch.setattr(runtime.tts, "prepare_demo_speech", Mock(return_value=True))
+    monkeypatch.setattr(runtime.demo, "_run", lambda: None)
+    app, socketio, _, _ = create_app(runtime)
+    jobs = []
+    monkeypatch.setattr(socketio, "start_background_task", lambda run, *args: jobs.append((run, args)))
+    operator, visitor = socketio.test_client(app), socketio.test_client(app)
+    try:
+        operator.emit("send_text", {"text": "Introduce yourself."})
+        operator.disconnect()
+        run, args = jobs.pop()
+        run(*args)
+        assert not runtime.demo.active
+        runtime.tts.prepare_demo_speech.assert_not_called()
+    finally:
+        if operator.is_connected():
+            operator.disconnect()
+        visitor.disconnect()
+
+
+@pytest.mark.parametrize("pipeline", ["wake", "capture"])
+def test_microphone_gain_reaches_inference_without_wrapping(expo_runtime, monkeypatch, pipeline):
+    from src.services import speech_service as speech_module
+
+    service = expo_runtime.speech
+    pcm = np.array([0, 500, -500, 30000, -30000], dtype=np.int16).tobytes()
+
+    def read(*args, **kwargs):
+        service._stop.set()
+        return pcm
+
+    stream = SimpleNamespace(read=read, stop_stream=Mock(), close=Mock())
+    monkeypatch.setattr(speech_module, "pyaudio", SimpleNamespace(PyAudio=lambda: SimpleNamespace(terminate=Mock())))
+    monkeypatch.setattr(service, "_open_stream", lambda _: stream)
+    monkeypatch.setattr(SpeechService, "wake_active", property(lambda _: pipeline == "wake"))
+    service._keyword_engine = SimpleNamespace(accept=Mock(return_value=""))
+    service._vad_engine = SimpleNamespace(accept=Mock(return_value=None), reset=Mock())
+    if pipeline == "capture":
+        service._pending_callback = Mock()
+    service._audio_loop()
+    engine = service._keyword_engine if pipeline == "wake" else service._vad_engine
+    engine.accept.assert_called_once()
+    gained = np.frombuffer(engine.accept.call_args.args[0], dtype=np.int16)
+    assert tuple(gained) == (0, 998, -998, 32767, -32768)
 
 
 def test_face_display_is_read_only_and_does_not_claim_operator_connection(expo_runtime):
