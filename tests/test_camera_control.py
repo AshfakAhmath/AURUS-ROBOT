@@ -106,6 +106,9 @@ def runtime_for(vision):
     runtime._lock = threading.RLock()
     runtime._last_manual_sequence = -1
     runtime._object_scan = threading.Lock()
+    runtime._demo_dashboard_sid = None
+    runtime._demo_dashboard_clients = set()
+    runtime._browser_listening_sid = None
     runtime.vision = vision
     runtime.identity = vision.identity_service
     runtime.sensor_sampler, runtime.driver, runtime.arbiter = sampler, driver, arbiter

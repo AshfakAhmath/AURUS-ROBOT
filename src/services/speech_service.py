@@ -310,6 +310,7 @@ class AdaptiveEnergyVad:
 class SpeechService:
     RATE = 16000
     FRAME_SAMPLES = 512  # Silero's recommended 16 kHz window (32 ms).
+    DEFAULT_MIC_GAIN_DB = 6.0
 
     def __init__(
         self,
@@ -322,6 +323,7 @@ class SpeechService:
         speech_start_timeout: float = 4.0,
         wake_enabled: bool = False,
         playback_active: threading.Event | None = None,
+        mic_gain_db: float = DEFAULT_MIC_GAIN_DB,
         **_legacy_wake_gate,
     ):
         self.model_path = Path(model_path)
@@ -332,6 +334,10 @@ class SpeechService:
         self.record_seconds = min(30.0, max(2.0, float(record_seconds)))
         self.speech_start_timeout = min(15.0, max(1.0, float(speech_start_timeout)))
         self.wake_requested = bool(wake_enabled)
+        if not math.isfinite(mic_gain_db):
+            mic_gain_db = self.DEFAULT_MIC_GAIN_DB
+        self.mic_gain_db = min(18.0, max(0.0, mic_gain_db))
+        self._mic_gain = 10 ** (self.mic_gain_db / 20.0)
         self.playback_active = playback_active or threading.Event()
         self.browser_playback_active = threading.Event()
 
@@ -349,6 +355,7 @@ class SpeechService:
         self._pending_callback: ResultCallback | None = None
         self._capturing = False
         self._processing = False
+        self._dispatching = False
         self._audio_ready = False
         self._playback_was_active = False
         self.selected_microphone_index: int | None = None
@@ -383,7 +390,7 @@ class SpeechService:
     @property
     def processing(self) -> bool:
         with self._lock:
-            return self._processing
+            return self._processing or self._dispatching
 
     @property
     def wake_gate_passed(self) -> bool:
@@ -506,7 +513,7 @@ class SpeechService:
         if not callable(callback) or not self.healthy:
             return False
         with self._lock:
-            if self._capturing or self._processing or self._pending_callback is not None:
+            if self._capturing or self._processing or self._dispatching or self._pending_callback is not None:
                 return False
             self._pending_callback = callback
             self._wake_pending = False
@@ -712,15 +719,22 @@ class SpeechService:
             self._keyword_engine.reset()
 
         def worker() -> None:
+            result_error = error
             try:
                 text = self._transcribe(pcm or b"") if not error else ""
-                if not self._stop.is_set():
-                    self._safe_result(callback, text, error)
             except Exception as exc:
-                self._safe_result(callback, "", f"speech recognition failed: {exc}")
+                text, result_error = "", f"speech recognition failed: {exc}"
             finally:
                 with self._lock:
                     self._processing = False
+                    self._dispatching = True
+            # Capture is complete, but don't accept another voice request during dispatch.
+            try:
+                if not self._stop.is_set():
+                    self._safe_result(callback, text, result_error)
+            finally:
+                with self._lock:
+                    self._dispatching = False
 
         threading.Thread(target=worker, name="speech-transcriber", daemon=True).start()
 
@@ -737,7 +751,7 @@ class SpeechService:
     def _notify_wake_detected(self, detected: str) -> None:
         """Latch one wake event until the runtime finishes its acknowledgement."""
         with self._lock:
-            if self._wake_pending or self._capturing or self._processing or self._pending_callback:
+            if self._wake_pending or self._capturing or self._processing or self._dispatching or self._pending_callback:
                 return
             self._wake_pending = True
             callback = self._wake_callback
@@ -749,6 +763,14 @@ class SpeechService:
             callback(detected)
         except Exception:
             self.cancel_wake()
+
+    def _amplify_mic(self, data: bytes) -> bytes:
+        if self._mic_gain == 1.0:
+            return data
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+        samples *= self._mic_gain
+        np.clip(samples, -32768, 32767, out=samples)
+        return np.rint(samples, out=samples).astype(np.int16).tobytes()
 
     def _audio_loop(self) -> None:
         audio = None
@@ -795,9 +817,7 @@ class SpeechService:
                 if time.monotonic() < resume_after:
                     continue
 
-                with self._lock:
-                    processing = self._processing
-                if processing:
+                if self.processing:
                     continue
 
                 if callback is None:
@@ -806,7 +826,7 @@ class SpeechService:
                         capture_started = time.monotonic()
 
                 if callback is not None:
-                    utterance = self._vad_engine.accept(data) if self._vad_engine else None
+                    utterance = self._vad_engine.accept(self._amplify_mic(data)) if self._vad_engine else None
                     elapsed = time.monotonic() - capture_started
                     if utterance is not None:
                         finished = callback
@@ -826,7 +846,7 @@ class SpeechService:
                     continue
 
                 if self.wake_active and self._keyword_engine:
-                    detected = self._keyword_engine.accept(data, self.RATE)
+                    detected = self._keyword_engine.accept(self._amplify_mic(data), self.RATE)
                     if detected:
                         self._notify_wake_detected(detected)
         except Exception as exc:

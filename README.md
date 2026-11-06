@@ -12,7 +12,7 @@ The existing verified motor directions, GPIO pin assignments, ultrasonic wiring,
 - **Realistic TTS**: Integrated with Microsoft Edge's Read Aloud Neural TTS for nuanced, incredibly realistic robot voices (falling back to Piper/eSpeak if offline).
 - **Face Recognition**: Enroll and recognize a person with OpenCV YuNet/SFace.
 - **Persistent Memory**: Persist names, face embeddings, memories, interactions, and events in SQLite.
-- **Browser Wake Word**: The dashboard supports fuzzy “AURUS” matching and an eight-second command window in browsers that provide the Web Speech API.
+- **Wake Word**: The Pi listens locally for “Hey AURUS” and variants such as “Hi AURUS” and “Hello AURUS”. The dashboard can also listen through the browser's Web Speech API.
 
 ## Quick Start on Raspberry Pi
 
@@ -38,7 +38,9 @@ python run.py
 
 Open `http://<raspberry-pi-ip>:5000`.
 
-Enable **Browser Mic**, say “Hey AURUS”, then speak the command when the button says **Wake heard**. Browser microphone access may require HTTPS when the dashboard is opened from another device.
+With **Browser Mic** enabled, say “Hey AURUS, introduce yourself” in one go, or say “Hey AURUS” and give the command when the button shows the listening countdown. Browser microphone access may require HTTPS when the dashboard is opened from another device.
+
+Type **Introduce yourself** in chat or say it as a voice command to start the supervised FIT Expo demo. When using the Pi microphone, say “Hey AURUS” and wait for “I'm listening” before giving the command.
 
 ## Exhibition display and object detection
 
@@ -102,6 +104,8 @@ ALSA_CAPTURE_DEVICE=plughw:3,0
 ```
 
 Then test the exact capture path with `python scripts/test_mic.py`. Local wake status and the selected microphone are reported by `python scripts/check_environment.py` and `/health`.
+
+On an existing Pi installation, run `python scripts/setup_models.py --wake-only` from the project's environment, then restart AURUS to load the new wake phrases. The local mic now gets a 6 dB boost by default; lower `AURUS_MIC_GAIN_DB` in `.env` if the mic is already loud or the audio distorts. The browser uses its own microphone settings.
 
 TTS gain and output routing are configurable:
 

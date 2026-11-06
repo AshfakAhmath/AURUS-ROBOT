@@ -415,7 +415,8 @@ let wakeTimeout = null;
 let micStartTimeout = null;
 let browserWakePending = false;
 let browserWakeArmed = false;
-const wakeTargets = ['aurus', 'auris', 'oris', 'aries'];
+// Common words that sound like AURUS need a greeting to avoid accidental wakes.
+const wakePrefix = /^(?:(?:hey|hi|hello|okay|ok)[\s,!.]+(?:aurus|auris|auros|oris|aries|or\s+us|a\s+rose)|aurus|auris|auros|oris)(?=$|[\s,;:.!?…–—-])/i;
 
 function setBrowserMicStatus(message) {
   const status = $('browser-mic-status');
@@ -450,20 +451,6 @@ socket.on('browser_listen_ready', ({seconds = 10}) => {
     armBrowserCommand(Math.max(1, Number(seconds) || 10), true);
   }
 });
-
-function editDistance(a, b) {
-  const row = Array.from({length: b.length + 1}, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    let diagonal = row[0];
-    row[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const above = row[j];
-      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
-      diagonal = above;
-    }
-  }
-  return row[b.length];
-}
 
 function renderMission(mission) {
   if (!mission) return;
@@ -522,18 +509,16 @@ function renderMission(mission) {
 }
 
 function wakeMatch(transcript) {
-  const words = transcript.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    if (word.length < 4 || word.length > 8) continue;
-    const similarity = Math.max(...wakeTargets.map(target => (
-      1 - editDistance(word, target) / Math.max(word.length, target.length)
-    )));
-    if (similarity >= 0.78) {
-      return {matched: true, command: words.slice(i + 1).join(' ')};
-    }
-  }
-  return {matched: false, command: ''};
+  const text = transcript.trim();
+  const prefix = wakePrefix.exec(text);
+  return prefix ? text.slice(prefix[0].length).replace(/^[\s,;:.!?…–—-]+/, '') : null;
+}
+
+function sendBrowserCommand(text) {
+  clearBrowserCommand();
+  setBrowserMicLabel('Mic on');
+  setBrowserMicStatus('Message sent. Say “Hey AURUS” or click the small mic for another message.');
+  socket.emit('send_text', {text, source: 'browser-mic'});
 }
 
 function setBrowserMicLabel(label, active = browserMicActive) {
@@ -591,6 +576,7 @@ function toggleBrowserMic() {
   browserMicActive = true;
   session.continuous = true;
   session.interimResults = false;
+  session.maxAlternatives = 3;
   session.lang = 'en-US';
   let missedSpeech = false;
 
@@ -617,23 +603,25 @@ function toggleBrowserMic() {
     }
   };
   session.onresult = (event) => {
-    if (recognition !== session || !socket.connected || browserWakePending) return;
+    if (recognition !== session || !socket.connected || browserWakePending || robotSpeaking || demoActive) return;
     for (let i = event.resultIndex; i < event.results.length; i++) {
-      if (event.results[i].isFinal) {
-        const transcript = event.results[i][0].transcript.trim();
-        if (!transcript || robotSpeaking || demoActive) continue;
-        missedSpeech = false;
+      const result = event.results[i];
+      if (!result.isFinal) continue;
+      const transcript = result[0].transcript.trim();
+      if (!transcript) continue;
+      missedSpeech = false;
 
-        if (Date.now() < wakeArmedUntil) {
-          clearBrowserCommand();
-          setBrowserMicLabel('Mic on');
-          setBrowserMicStatus('Message sent. Say “Hey AURUS” or click the small mic for another message.');
-          socket.emit('send_text', {text: transcript, source: 'browser-mic'});
-          return;
-        }
+      if (Date.now() < wakeArmedUntil) {
+        sendBrowserCommand(transcript);
+        return;
+      }
 
-        const match = wakeMatch(transcript);
-        if (match.matched) {
+      for (let alternative = 0; alternative < result.length; alternative++) {
+        const command = wakeMatch(result[alternative].transcript);
+        if (command === null) continue;
+        if (command) {
+          sendBrowserCommand(command);
+        } else {
           clearBrowserCommand();
           browserWakePending = true;
           setBrowserMicLabel('Wake heard');
@@ -644,10 +632,10 @@ function toggleBrowserMic() {
             setBrowserMicStatus('AURUS did not open the listening window. Try the small mic button.');
           }, 30000);
           socket.emit('browser_wake_detected', {});
-          return;
         }
-        setBrowserMicStatus('Speech recognized. Say “Hey AURUS” or click the small mic to send a message.');
+        return;
       }
+      setBrowserMicStatus('Speech recognized. Say “Hey AURUS” or click the small mic to send a message.');
     }
   };
 

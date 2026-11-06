@@ -26,6 +26,13 @@ from src.services.groq_vision_service import GroqVisionService
 from src.services.exhibition_demo import ExhibitionDemo
 
 
+INTRODUCTION_REQUEST = re.compile(
+    r"(?:(?:hey\s+)?aurus[\s,]+)?(?:(?:can|could|would|will) you\s+)?(?:please\s+)?"
+    r"introduce yourself(?:\s+to\s+[^.!?]+?)?(?:[\s,]+please)?[.!?]*",
+    re.IGNORECASE,
+)
+
+
 class RobotRuntime:
     def __init__(self, project_root: str | Path | None = None):
         self.project_root = Path(project_root or Path(__file__).resolve().parents[1])
@@ -83,7 +90,8 @@ class RobotRuntime:
             microphone_index=microphone_index_value,
             record_seconds=config.AURUS_RECORD_SECONDS,
             speech_start_timeout=float_setting("AURUS_SPEECH_START_TIMEOUT", 10.0),
-            wake_enabled=os.getenv("AURUS_WAKE_ENABLED", "false").lower() == "true",
+            wake_enabled=os.getenv("AURUS_WAKE_ENABLED", "true").strip().lower() == "true",
+            mic_gain_db=float_setting("AURUS_MIC_GAIN_DB", SpeechService.DEFAULT_MIC_GAIN_DB),
             playback_active=audio_playback,
         )
         self.tts = TTSService(
@@ -107,6 +115,8 @@ class RobotRuntime:
         self._object_scan = threading.Lock()
         self._last_manual_sequence = -1
         self._demo_dashboard_sid = None
+        self._demo_dashboard_clients: set[str] = set()
+        self._browser_listening_sid: str | None = None
         self.demo = ExhibitionDemo(self)
         self.behavior.showcase_start = self.start_exhibition_demo
         self.behavior.demo_active = lambda: self.demo_active
@@ -177,9 +187,21 @@ class RobotRuntime:
 
     def start_exhibition_demo(self, owner_sid=None):
         with self._lock:
-            if self._object_scan.locked():
+            if self._object_scan.locked() or (owner_sid and owner_sid not in self._demo_dashboard_clients):
                 return False
             return self.demo.start(owner_sid or self._demo_dashboard_sid)
+
+    def set_demo_dashboard_client(self, sid: str, connected: bool) -> None:
+        with self._lock:
+            if connected:
+                self._demo_dashboard_clients.add(sid)
+                self._demo_dashboard_sid = sid
+                return
+            self._demo_dashboard_clients.discard(sid)
+            if self._demo_dashboard_sid == sid:
+                self._demo_dashboard_sid = next(iter(self._demo_dashboard_clients), None)
+            self.browser_listening_finished(sid)
+            self.demo.owner_disconnected(sid)
 
     def stop_exhibition_demo(self, reason="Stopped by operator"):
         demo = getattr(self, "demo", None)
@@ -389,7 +411,13 @@ class RobotRuntime:
         if not self.speech.healthy:
             self.emit("conversation", {"source": "voice", "transcript": "", "response": "Microphone recognition is unavailable. Please use text input.", "provider": "local", "fallback_reason": self.speech.error})
             return False
-        if not self.arbiter.set_mode(RobotMode.LISTENING):
+        with self._lock:
+            if self.demo_active or self.arbiter.mode == RobotMode.LISTENING:
+                return False
+            listening = self.arbiter.set_mode(RobotMode.LISTENING)
+            if listening:
+                self._browser_listening_sid = None
+        if not listening:
             self.emit("conversation", {
                 "source": "voice",
                 "transcript": "",
@@ -405,7 +433,12 @@ class RobotRuntime:
 
     def _wake_detected(self, _keyword: str = "AURUS") -> None:
         """Acknowledge a local wake phrase, then open the command capture window."""
-        if self.demo_active or not self.arbiter.set_mode(RobotMode.LISTENING):
+        with self._lock:
+            listening = (not self.demo_active and self.arbiter.mode != RobotMode.LISTENING
+                         and self.arbiter.set_mode(RobotMode.LISTENING))
+            if listening:
+                self._browser_listening_sid = None
+        if not listening:
             self.speech.cancel_wake()
             return
         response = "I'm listening."
@@ -433,10 +466,17 @@ class RobotRuntime:
         if not self.tts.speak(response, on_complete=begin_capture):
             begin_capture()
 
-    def browser_wake_detected(self) -> bool:
+    def browser_wake_detected(self, owner_sid: str | None = None) -> bool:
         """Acknowledge the browser wake phrase before arming its command window."""
-        if self.demo_active or not self.arbiter.set_mode(RobotMode.LISTENING):
+        if not owner_sid:
             return False
+        with self._lock:
+            if (owner_sid not in self._demo_dashboard_clients or self.demo_active
+                    or self.arbiter.mode == RobotMode.LISTENING or self.speech.processing
+                    or self.speech.listening
+                    or not self.arbiter.set_mode(RobotMode.LISTENING)):
+                return False
+            self._browser_listening_sid = owner_sid
         response = "I'm listening."
         self.emit("conversation", {
             "source": "browser-mic",
@@ -447,20 +487,26 @@ class RobotRuntime:
         })
 
         def ready() -> None:
-            self.emit("browser_listen_ready", {"seconds": 10})
+            with self._lock:
+                if self._browser_listening_sid == owner_sid and self.arbiter.mode == RobotMode.LISTENING:
+                    self.emit("browser_listen_ready", {"seconds": 10, "_recipient": owner_sid})
 
         if not self.tts.speak(response, on_complete=ready):
             ready()
         return True
 
-    def browser_listening_finished(self) -> None:
-        if self.arbiter.mode == RobotMode.LISTENING:
-            self.arbiter.set_mode(RobotMode.IDLE)
+    def browser_listening_finished(self, owner_sid: str | None) -> None:
+        with self._lock:
+            if owner_sid is not None and self._browser_listening_sid == owner_sid:
+                self._browser_listening_sid = None
+                if self.arbiter.mode == RobotMode.LISTENING:
+                    self.arbiter.set_mode(RobotMode.IDLE)
 
-    def handle_browser_speech(self, text: str) -> dict:
-        result = self.handle_text(text, source="browser-mic")
-        self.browser_listening_finished()
-        return result
+    def handle_browser_speech(self, text: str, owner_sid: str | None = None) -> dict:
+        try:
+            return self.handle_text(text, source="browser-mic", owner_sid=owner_sid)
+        finally:
+            self.browser_listening_finished(owner_sid)
 
     def _speech_result(self, text: str, error: str | None) -> None:
         if error or not text:
@@ -507,7 +553,20 @@ class RobotRuntime:
             pass
         return payload
 
-    def handle_text(self, text: str, source: str = "text") -> dict:
+    def _start_requested_demo(self, source: str, owner_sid: str | None) -> dict:
+        with self._lock:
+            if source == "browser-mic":
+                self.browser_listening_finished(owner_sid)
+            elif source == "voice" and self.arbiter.mode == RobotMode.LISTENING:
+                self.arbiter.set_mode(RobotMode.IDLE)
+            started = self.start_exhibition_demo(owner_sid)
+        if started:
+            return {"status": "ok", "message": "FIT Expo demo started"}
+        message = "FIT Expo demo unavailable: stop other activity, clear E-STOP if appropriate, and check Groq demo speech access."
+        self.emit("command_error", {"message": message})
+        return {"status": "error", "message": message}
+
+    def handle_text(self, text: str, source: str = "text", *, owner_sid: str | None = None) -> dict:
         clean = " ".join((text or "").strip().split())[:1000]
         if not clean:
             return self._announce("I did not receive a command.", source, clean, "local")
@@ -520,7 +579,7 @@ class RobotRuntime:
             self.emergency_stop()
             return self._announce("Emergency stop activated and latched.", source, clean, "local")
         if (
-            lower in ("stop", "halt", "freeze", "stop demo", "stop showcase")
+            lower.rstrip(".!?,;: ") in ("stop", "halt", "freeze", "stop demo", "stop showcase")
             or "stop exploring" in lower
             or "stop and summarize" in lower
             or "stop and summarise" in lower
@@ -544,6 +603,9 @@ class RobotRuntime:
             message = "FIT Expo demo is running. Use Stop Demo or E-STOP to interrupt."
             self.emit("command_error", {"message": message})
             return {"status": "error", "message": message}
+
+        if INTRODUCTION_REQUEST.fullmatch(clean):
+            return self._start_requested_demo(source, owner_sid)
 
         if any(phrase in lower for phrase in (
             "what have you found", "mission status", "exploration status",
@@ -647,10 +709,7 @@ class RobotRuntime:
             self.set_mode("manual")
             return self._announce("Manual mode ready.", source, clean, "local")
         if any(phrase in lower for phrase in ("show me what you can do", "showcase", "dance")):
-            started = self.behavior.start_showcase()
-            if not started:
-                self.emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity and check Groq demo speech access."})
-            return {"status": "ok" if started else "error", "message": "FIT Expo demo started" if started else "Demo unavailable"}
+            return self._start_requested_demo(source, owner_sid)
         if "status" in lower or "how are your systems" in lower:
             sensors = self.sensor_sampler.get_snapshot()
             clearance = sensors.available_clearance("front", center_default=self.arbiter.front_sensor_enabled)
