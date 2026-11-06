@@ -62,12 +62,17 @@ playback. Audio already playing can finish.
 Keep `GROQ_VISION_MODEL=qwen/qwen3.8-27b` in the Pi's `.env` and verify the feature
 with the exhibition connection before presenting.
 
-The **Start FIT Expo Demo** sequence uses fresh Groq speech, six short smooth
+The **Start FIT Expo Demo** sequence uses live Groq or recorded speech, six short smooth
 gestures (forward, backward, left/right strafe and left/right turn), then stops
 for a live camera object check and speaks what it finds. The supervised demo
 bypasses ultrasonic distance and coverage restrictions; keep its movement area
 clear. Stop Demo, E-STOP, disconnect and command timeouts remain active. Camera
 OFF or a failed/changed scan is explained and the introduction continues.
+
+For repeated expo runs, set `AURUS_DEMO_TTS_MODE=recorded` on the Pi. Prepare
+Troy clips once with `.venv/bin/python scripts/check_demo_tts.py --prepare`
+when Groq quota is available. Recorded mode uses Piper or eSpeak for missing
+clips and live object results. See the [Pi setup guide](docs/PI_MANUAL_SETUP.md).
 
 MCP movement retains obstacle stopping below **20 cm**, with reduced speed
 from **20 to below 25 cm**. Manual and Explore retain their existing thresholds

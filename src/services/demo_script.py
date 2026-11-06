@@ -1,4 +1,4 @@
-"""Reviewed predefined FIT Expo messages, synthesized live on each run."""
+"""Reviewed FIT Expo messages for live synthesis or recorded playback."""
 
 DEMO_CLIPS = {
     "introduction": "Hello everyone! I'm AURUS, a robotic companion built by Team TechTitans. I'm a working prototype that brings together movement, vision, voice, and artificial intelligence. Welcome to the Faculty of Information Technology Expo!",

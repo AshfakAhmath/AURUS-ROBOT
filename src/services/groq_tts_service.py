@@ -1,5 +1,6 @@
-"""Live Groq synthesis for the predefined demo only; no persistent audio cache."""
+"""Groq synthesis and saved audio paths for the FIT Expo demo."""
 
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,25 @@ except ImportError:
 
 MODEL = "canopylabs/orpheus-v1-english"
 VOICES = {"autumn", "diana", "hannah", "austin", "daniel", "troy"}
+DEMO_RECORDINGS_DIR = Path(__file__).resolve().parents[2] / "logs" / "demo-audio"
+
+
+def demo_recording_path(text):
+    model = os.getenv("AURUS_DEMO_TTS_MODEL", MODEL)
+    voice = os.getenv("AURUS_DEMO_TTS_VOICE", "troy").strip().lower()
+    key = hashlib.sha256(f"{model}\n{voice}\n{text}".encode("utf-8")).hexdigest()
+    return DEMO_RECORDINGS_DIR / f"{key}.wav"
+
+
+def has_demo_recording(path):
+    try:
+        with wave.open(str(path), "rb") as source:
+            channels = source.getnchannels()
+            count = source.getnframes()
+            return (channels in (1, 2) and source.getsampwidth() == 2 and count > 0
+                    and len(source.readframes(count)) == channels * 2 * count)
+    except (OSError, EOFError, wave.Error):
+        return False
 
 
 def speech_chunks(text, limit=200):

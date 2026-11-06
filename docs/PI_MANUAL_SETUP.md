@@ -1,10 +1,9 @@
-# AURUS: original normal TTS and live Groq FIT Expo demo
+# AURUS speech and FIT Expo demo setup
 
 Normal speech uses the previous automatic Piper / Edge / eSpeak selection and
-its previous gain behavior. Only the demo uses Groq Orpheus/Troy. Each predefined
-line requests fresh audio on every run; long lines are split at 200 characters.
-There is no saved-demo replay or local-voice fallback for demo narration.
-Temporary WAVs are removed after playback or failure.
+its previous gain behavior. The FIT Expo demo can use live Groq Orpheus/Troy or
+replay prepared Troy WAVs. In recorded mode, missing clips and live camera results
+use Piper or eSpeak. Long Groq lines are split at 200 characters.
 
 ## 1. Transfer the reviewed changes
 
@@ -39,8 +38,6 @@ git merge --ff-only origin/main
 ```
 
 Use a unique recovery-branch name. Stop on any ancestry/divergence failure.
-All source deletions must be included when transferring manually: the old cached
-WAV/manifest, preparation script and general Groq test command are retired.
 No new package requirement was added; Groq was already a project dependency.
 
 ## 2. Edit the existing Pi .env
@@ -63,7 +60,8 @@ AURUS_TTS_VOICE=en-US-GuyNeural
 AURUS_TTS_VOLUME_PERCENT=100
 AURUS_TTS_GAIN_DB=12
 
-# Demo only: live Groq speech every time
+# Demo only: recorded for repeatable shows, or live for fresh Groq speech
+AURUS_DEMO_TTS_MODE=recorded
 AURUS_DEMO_TTS_MODEL=canopylabs/orpheus-v1-english
 AURUS_DEMO_TTS_VOICE=troy
 AURUS_DEMO_AUDIO_ENHANCE=true
@@ -108,7 +106,7 @@ If it requests model terms, the appropriate account administrator must review
 and accept them if they agree. HTTP 400 alone does not establish the cause;
 `model_terms_required` is now reported explicitly when returned by Groq.
 
-The live demo requires internet and available Groq quota. A failed generation
+The live demo mode requires internet and available Groq quota. A failed generation
 cancels the demo before its next gesture and reports the reason. It does not
 reuse an earlier recording or silently change the demo voice. An in-flight
 cloud request can finish after Stop, but its audio is discarded and no later
@@ -132,6 +130,19 @@ Only `--play` invokes audio playback. They never initialize the robot runtime,
 GPIO or motors and do not print the API key. Successful synthesis confirms API
 access at that moment; an audible introduction confirms the speaker route.
 
+To prepare the scripted lines for recorded mode, run this once on the Pi when
+Groq speech quota is available:
+
+```bash
+.venv/bin/python scripts/check_demo_tts.py --prepare
+```
+
+The script saves clips in `logs/demo-audio/`. If it stops partway through,
+run it again when quota is available. Completed clips are reused. Recorded
+mode works immediately with Piper or eSpeak installed and uses the local voice
+for any clips still missing. It makes no Groq TTS calls during a show. Live
+object recognition still needs Groq Vision. Restart AURUS after changing mode.
+
 ## 5. Start manually and test
 
 ```bash
@@ -142,7 +153,7 @@ Visit `http://PI_ADDRESS:5000`. First type a greeting to confirm the original
 normal voice. Choose Pi or PC audio before the demo, then use **Start FIT Expo
 Demo**. Speech is generated from the reviewed prototype/FIT Expo introduction,
 capabilities, greetings and closing text in `src/services/demo_script.py`.
-Each new run makes new speech requests. Short forward/reverse, left/right
+Short forward/reverse, left/right
 strafe and turn gestures use gradual acceleration and deceleration. Demo
 gestures bypass ultrasonic distance and coverage restrictions; keep the small
 movement area clear and supervise the robot. Stop Demo, E-STOP and operator
@@ -234,7 +245,7 @@ Manual and Explore continue using their existing sensor protection.
 
 After the gestures and capabilities line, AURUS remains stationary, takes a
 fresh camera frame, identifies visible objects and speaks a brief live result
-through the same Groq demo voice and face captions. Camera OFF, no fresh frame,
+using the selected demo narration mode with face captions. Camera OFF, no fresh frame,
 network/model failure or a changed camera session skips that result and allows
 the closing to continue. Switching the camera OFF during synthesis discards
 an object line that has not started playback; audio already playing can finish.

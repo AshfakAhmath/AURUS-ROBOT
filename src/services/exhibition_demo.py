@@ -102,7 +102,8 @@ class ExhibitionDemo:
             result.append(success)
             done.set()
         self._update(stage=stage)
-        self.runtime.emit("conversation", {"source": "demo", "transcript": "", "response": text, "provider": "groq-demo-tts"})
+        provider = "recorded-demo" if getattr(self.runtime.tts, "demo_mode", "live") == "recorded" else "groq-demo-tts"
+        self.runtime.emit("conversation", {"source": "demo", "transcript": "", "response": text, "provider": provider})
         options = {"valid_when": valid_when} if valid_when is not None else {}
         if not self.runtime.tts.speak_demo(text, completed, self._owner_sid, self._cancelled, **options):
             self.cancel("Demo audio could not be queued")

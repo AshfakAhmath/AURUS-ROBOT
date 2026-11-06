@@ -9,7 +9,8 @@ import wave
 import numpy as np
 import pytest
 
-from src.services.groq_tts_service import GroqSpeechSynthesizer, MODEL, speech_chunks
+from src.services.demo_script import DEMO_CLIPS
+from src.services.groq_tts_service import GroqSpeechSynthesizer, MODEL, demo_recording_path, speech_chunks
 from src.services.tts_service import TTSService, DemoSpeech
 
 
@@ -307,3 +308,69 @@ def test_missing_key_affects_only_demo_readiness(monkeypatch):
     assert service.speak("Ordinary reply")
     assert not service.prepare_demo_speech() and "GROQ_API_KEY" in service.demo_error
     assert service.backend == backend and service.error == original_error
+
+
+def test_prepare_resumes_after_rate_limit_and_reuses_completed_recordings(monkeypatch, tmp_path):
+    from scripts import check_demo_tts
+
+    client = configure_demo_client(monkeypatch)
+    monkeypatch.setattr("src.services.groq_tts_service.DEMO_RECORDINGS_DIR", tmp_path)
+    monkeypatch.setattr(check_demo_tts, "DEMO_CLIPS", {"first": "Hello visitors.", "second": "Welcome to the FIT Expo."})
+    monkeypatch.setattr("sys.argv", ["check_demo_tts.py", "--prepare"])
+    first = demo_recording_path("Hello visitors.")
+    second = demo_recording_path("Welcome to the FIT Expo.")
+    create = client.audio.speech.create
+    rate_limit = RuntimeError("rate limit")
+    rate_limit.status_code = 429
+    create.side_effect = [create.return_value, rate_limit]
+    assert check_demo_tts.main() == 1
+    assert first.is_file() and not second.exists()
+
+    create.side_effect = None
+    create.reset_mock()
+    assert check_demo_tts.main() == 0
+    assert second.is_file()
+    create.assert_called_once()
+    assert create.call_args.kwargs["input"] == "Welcome to the FIT Expo."
+
+    monkeypatch.setattr(check_demo_tts, "GroqSpeechSynthesizer", Mock(side_effect=AssertionError("Recordings are complete")))
+    assert check_demo_tts.main() == 0
+
+
+def test_recorded_demo_replays_saved_line_without_groq_and_keeps_original(monkeypatch, tmp_path):
+    monkeypatch.setenv("AURUS_DEMO_TTS_MODE", "recorded")
+    monkeypatch.setattr("src.services.groq_tts_service.DEMO_RECORDINGS_DIR", tmp_path)
+    monkeypatch.setattr("src.services.tts_service.GroqSpeechSynthesizer", Mock(side_effect=AssertionError("Recorded mode is local")))
+    service = TTSService(audio_output="pi")
+    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
+    monkeypatch.setattr(service, "_synthesize_piper", Mock(side_effect=AssertionError("Line is already recorded")))
+    played = []
+    monkeypatch.setattr(service, "_play_wav", lambda path: played.append(Path(path)))
+    text = DEMO_CLIPS["closing"]
+    path = demo_recording_path(text)
+    write_pcm(path)
+    original = path.read_bytes()
+    completed = []
+    for _ in range(2):
+        service._run_demo(DemoSpeech(text, completed.append, "operator", threading.Event()))
+    assert completed == [True, True]
+    assert len(played) == 2 and all(not temp.exists() for temp in played)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("text", [DEMO_CLIPS["closing"], "Right now, I can see a red mug."])
+def test_recorded_demo_uses_local_speech_for_missing_clips_and_live_results(monkeypatch, tmp_path, text):
+    monkeypatch.setenv("AURUS_DEMO_TTS_MODE", "recorded")
+    monkeypatch.setattr("src.services.groq_tts_service.DEMO_RECORDINGS_DIR", tmp_path)
+    monkeypatch.setattr("src.services.tts_service.GroqSpeechSynthesizer", Mock(side_effect=AssertionError("Recorded mode is local")))
+    service = TTSService(audio_output="pi")
+    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
+    render = Mock(side_effect=lambda _text, path: write_pcm(path))
+    monkeypatch.setattr(service, "_synthesize_piper", render)
+    monkeypatch.setattr(service, "_play_wav", Mock())
+    completed = []
+    service._run_demo(DemoSpeech(text, completed.append, "operator", threading.Event()))
+    assert completed == [True]
+    assert render.call_args.args[0] == text
+    service._play_wav.assert_called_once()
+    assert not list(tmp_path.glob("*.wav"))
