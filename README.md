@@ -1,6 +1,6 @@
 # AURUS Evaluation Edition
 
-AURUS (AUtonomous Robotic Ubiquitous System) is an AI companion rover built for the Raspberry Pi 4B. Developed by the TechTitans team, it combines persistent face identity, guarded autonomous exploration, and Groq-hosted intelligence.
+AURUS (AUtonomous Robotic Ubiquitous System) is an AI companion rover built for the Raspberry Pi 4B. Developed by the TechTitans team, it combines an interactive mascot, guarded autonomous exploration, and Groq-hosted intelligence.
 
 The existing verified motor directions, GPIO pin assignments, ultrasonic wiring, and mecanum kinematics are intentionally preserved.
 
@@ -10,8 +10,8 @@ The existing verified motor directions, GPIO pin assignments, ultrasonic wiring,
 - **Autonomous Vision**: While exploring, it takes a photo every 10–12 seconds and uses a current Groq-hosted vision model to narrate its surroundings.
 - **Speech-to-Text**: Uses Groq Whisper Large V3 Turbo, with lazy Vosk fallback when the local model is installed.
 - **Realistic TTS**: Integrated with Microsoft Edge's Read Aloud Neural TTS for nuanced, incredibly realistic robot voices (falling back to Piper/eSpeak if offline).
-- **Face Recognition**: Enroll and recognize a person with OpenCV YuNet/SFace.
-- **Persistent Memory**: Persist names, face embeddings, memories, interactions, and events in SQLite.
+- **Mascot Gestures**: Ask the mascot to copy a wave, thumbs-up, two-hand heart, open palm, or peace sign.
+- **Persistent Memory**: Share your name to link facts you choose to save in SQLite.
 - **Wake Word**: The Pi listens locally for “Hey AURUS” and variants such as “Hi AURUS” and “Hello AURUS”. The dashboard can also listen through the browser's Web Speech API.
 
 ## Quick Start on Raspberry Pi
@@ -30,7 +30,7 @@ cp .env.example .env
 python scripts/setup_llm.py
 ```
 
-`scripts/setup_models.py` installs offline voice and vision fallback assets. Set `AURUS_FRONT_SENSOR_ENABLED=false` only if the center ultrasonic sensor is physically unavailable; this enables slower degraded exploration, but it cannot replace the coverage of a working forward sensor.
+`scripts/setup_models.py` installs offline voice and mascot gesture models. Set `AURUS_FRONT_SENSOR_ENABLED=false` only if the center ultrasonic sensor is physically unavailable; this enables slower degraded exploration, but it cannot replace the coverage of a working forward sensor.
 
 ```bash
 python run.py
@@ -42,15 +42,27 @@ With **Browser Mic** enabled, say “Hey AURUS, introduce yourself” in one go,
 
 Type **Introduce yourself** in chat or say it as a voice command to start the supervised FIT Expo demo. When using the Pi microphone, say “Hey AURUS” and wait for “I'm listening” before giving the command.
 
+Ask **“What time is it?”**, **“What day is it?”**, **“Where are we?”** or
+**“What's the weather like?”** in chat or by voice. Set `AURUS_TIMEZONE`,
+`AURUS_LOCATION`, `AURUS_WEATHER_LATITUDE` and `AURUS_WEATHER_LONGITUDE` in
+the Pi's `.env`. AURUS uses its clock and the configured venue for local
+answers, and [Open-Meteo](https://open-meteo.com/en/docs) for weather.
+
 ## Exhibition display and object detection
 
-Keep the command center open on the operator laptop. Select **Open Face Display**
+Keep the command center open on the operator laptop. Select **Open Mascot Display**
 or open `http://<raspberry-pi-ip>:5000/face` in a second window, move it to the
 external monitor, and enter browser fullscreen. The display shows AURUS's current
 expression and reconnects automatically. While AURUS speaks, the spoken sentence
-appears below the face and clears when playback ends. This includes ordinary
+appears below the mascot and clears when playback ends. This includes ordinary
 replies, object announcements and FIT Expo narration, through Pi or PC audio.
 Keep dashboard access on the operator network.
+
+With the live camera ready, select **Try a Gesture** and show one gesture in
+the preview. Hold the pose or wave side to side. For a heart, join your index
+fingertips above your thumbs. AURUS checks gestures locally for up to three
+seconds after each tap. See the [Pi setup guide](docs/PI_MANUAL_SETUP.md#9-mascot-gestures)
+to install the optional recognizer.
 
 With the camera running, hold up a prop and select **Detect Objects** under the
 live feed. AURUS sends one camera frame to Groq Vision and lists the object labels
@@ -62,17 +74,16 @@ playback. Audio already playing can finish.
 Keep `GROQ_VISION_MODEL=qwen/qwen3.8-27b` in the Pi's `.env` and verify the feature
 with the exhibition connection before presenting.
 
-The **Start FIT Expo Demo** sequence uses live Groq or recorded speech, six short smooth
+The **Start FIT Expo Demo** sequence uses local Piper speech, six short smooth
 gestures (forward, backward, left/right strafe and left/right turn), then stops
 for a live camera object check and speaks what it finds. The supervised demo
 bypasses ultrasonic distance and coverage restrictions; keep its movement area
 clear. Stop Demo, E-STOP, disconnect and command timeouts remain active. Camera
 OFF or a failed/changed scan is explained and the introduction continues.
 
-For repeated expo runs, set `AURUS_DEMO_TTS_MODE=recorded` on the Pi. Prepare
-Troy clips once with `.venv/bin/python scripts/check_demo_tts.py --prepare`
-when Groq quota is available. Recorded mode uses Piper or eSpeak for missing
-clips and live object results. See the [Pi setup guide](docs/PI_MANUAL_SETUP.md).
+Set `PIPER_MODEL_PATH` to the installed voice for demo narration. AURUS uses
+eSpeak if Piper is unavailable. The live object check uses Groq Vision and
+the same local voice to announce the result. See the [Pi setup guide](docs/PI_MANUAL_SETUP.md).
 
 MCP movement retains obstacle stopping below **20 cm**, with reduced speed
 from **20 to below 25 cm**. Manual and Explore retain their existing thresholds

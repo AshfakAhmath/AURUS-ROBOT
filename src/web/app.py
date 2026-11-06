@@ -64,6 +64,17 @@ def create_app(runtime):
     def health():
         return jsonify(runtime.health())
 
+    @app.post("/face/gesture")
+    def face_gesture():
+        data = payload(request.get_json(silent=True))
+        generation = data.get("generation")
+        if type(generation) is not int:
+            return jsonify(message="Wait for the live camera before starting a scan."), 400
+        result, status = runtime.gestures.scan(generation)
+        response = jsonify(result)
+        response.cache_control.no_store = True
+        return response, status
+
     @app.get("/video_feed")
     def video_feed():
         def frames():
@@ -298,7 +309,7 @@ def create_app(runtime):
     @socketio.on("perform_showcase")
     def perform_showcase(_data=None):
         if not runtime.start_exhibition_demo(request.sid):
-            emit("command_error", {"message": "FIT Expo demo unavailable: stop other activity, clear E-STOP if appropriate, and check Groq demo speech access."})
+            emit("command_error", {"message": "FIT Expo demo unavailable. Stop other activity, check E-STOP, and check that Piper or eSpeak is ready."})
 
     @socketio.on("stop_showcase")
     def stop_showcase(_data=None):

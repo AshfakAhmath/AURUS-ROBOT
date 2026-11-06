@@ -15,13 +15,10 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ROOT / "models"
 
-FILES = {
-    "face_detection_yunet_2023mar.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
-    "face_recognition_sface_2021dec.onnx": "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
-    # Pi OS OpenCV may expose CascadeClassifier without installing its XML
-    # data package. Keep an application-local detector for YuNet fallback.
-    "haarcascade_frontalface_default.xml": "https://raw.githubusercontent.com/opencv/opencv/4.x/data/haarcascades/haarcascade_frontalface_default.xml",
-}
+GESTURE_URL = (
+    "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/"
+    "gesture_recognizer/float16/1/gesture_recognizer.task"
+)
 VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 KWS_NAME = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
 KWS_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/{KWS_NAME}.tar.bz2"
@@ -128,14 +125,17 @@ def download_piper_voice() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--wake-only", action="store_true", help="Install or refresh just the wake-word model and keywords")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--wake-only", action="store_true", help="Install or refresh just the wake-word model and keywords")
+    mode.add_argument("--gesture-only", action="store_true", help="Install just the mascot gesture model")
     args = parser.parse_args()
     MODELS.mkdir(parents=True, exist_ok=True)
     if args.wake_only:
         setup_wake_model()
         return 0
-    for filename, url in FILES.items():
-        download(url, MODELS / filename)
+    download(GESTURE_URL, MODELS / "gesture_recognizer.task")
+    if args.gesture_only:
+        return 0
     vosk_dir = MODELS / "vosk-model-small-en-us-0.15"
     if not vosk_dir.exists():
         archive_path = MODELS / "vosk-model-small-en-us-0.15.zip"

@@ -164,7 +164,7 @@ def test_start_rejects_busy_and_repeated_runs(monkeypatch):
     demo._thread.join(1)
 
 
-def live_service(monkeypatch, **kwargs):
+def piper_service(monkeypatch, **kwargs):
     service = TTSService(**kwargs)
     def synthesize(text, path, **kwargs):
         with wave.open(str(path), "wb") as output:
@@ -172,12 +172,13 @@ def live_service(monkeypatch, **kwargs):
             output.setsampwidth(2)
             output.setframerate(24000)
             output.writeframes(np.full(2400, 1000, dtype="<i2").tobytes())
-    service._demo_speech = SimpleNamespace(ready=True, error="", synthesize=Mock(side_effect=synthesize))
+    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
+    monkeypatch.setattr(service, "_synthesize_piper", Mock(side_effect=synthesize))
     return service
 
 
 def test_each_demo_utterance_synthesizes_and_deletes_temporary_audio(monkeypatch):
-    service = live_service(monkeypatch, audio_output="pi")
+    service = piper_service(monkeypatch, audio_output="pi")
     played = []
     monkeypatch.setattr(service, "_play_wav", lambda path: played.append(Path(path)))
     monkeypatch.setattr(service, "_speak", Mock(side_effect=AssertionError("Must not use normal TTS")))
@@ -185,15 +186,15 @@ def test_each_demo_utterance_synthesizes_and_deletes_temporary_audio(monkeypatch
     for _ in range(2):
         service._run_demo(DemoSpeech(DEMO_CLIPS["closing"], observed.append, "operator", threading.Event()))
     assert observed == [True, True]
-    assert service._demo_speech.synthesize.call_count == 2
+    assert service._synthesize_piper.call_count == 2
     assert len(played) == 2 and played[0] != played[1]
     assert all(not path.exists() for path in played)
     service._speak.assert_not_called()
     assert not service.playback_active.is_set()
 
 
-def test_live_browser_ack_is_scoped_and_waits_for_playback(monkeypatch):
-    service = live_service(monkeypatch, audio_output="browser")
+def test_demo_browser_ack_is_scoped_and_waits_for_playback(monkeypatch):
+    service = piper_service(monkeypatch, audio_output="browser")
     observed = []
     def emit(event, payload):
         assert event == "play_audio" and payload["_recipient"] == "operator"
@@ -209,19 +210,19 @@ def test_live_browser_ack_is_scoped_and_waits_for_playback(monkeypatch):
     assert not service.acknowledge_demo(job.playback_id, "operator", True)
 
 
-def test_live_auto_falls_back_to_browser_without_resynthesis(monkeypatch):
-    service = live_service(monkeypatch, audio_output="auto")
+def test_demo_auto_falls_back_to_browser_without_resynthesis(monkeypatch):
+    service = piper_service(monkeypatch, audio_output="auto")
     monkeypatch.setattr(service, "_play_wav", Mock(side_effect=RuntimeError("Speaker disconnected")))
     service.set_audio_emit(lambda event, data: service.acknowledge_demo(data["playback_id"], "operator", True))
     observed = []
     service._run_demo(DemoSpeech(DEMO_CLIPS["closing"], observed.append, "operator", threading.Event()))
     assert observed == [True] and service.active_output == "browser"
-    assert service._demo_speech.synthesize.call_count == 1
+    assert service._synthesize_piper.call_count == 1
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_demo_playback_failure_or_cancel_reports_failure(monkeypatch, cancelled):
-    service = live_service(monkeypatch, audio_output="pi")
+    service = piper_service(monkeypatch, audio_output="pi")
     play = Mock(side_effect=RuntimeError("No speaker"))
     monkeypatch.setattr(service, "_play_wav", play)
     signal = threading.Event()
@@ -231,12 +232,12 @@ def test_demo_playback_failure_or_cancel_reports_failure(monkeypatch, cancelled)
     assert observed == [False]
     if cancelled:
         play.assert_not_called()
-        service._demo_speech.synthesize.assert_not_called()
+        service._synthesize_piper.assert_not_called()
 
 
-def test_browser_timeout_ends_live_demo_job(monkeypatch):
+def test_browser_timeout_ends_demo_job(monkeypatch):
     from src.services import tts_service
-    service = live_service(monkeypatch, audio_output="browser", audio_emit=lambda *args: None)
+    service = piper_service(monkeypatch, audio_output="browser", audio_emit=lambda *args: None)
     clock = iter([0, 46])
     monkeypatch.setattr(tts_service.time, "monotonic", lambda: next(clock))
     observed = []
@@ -244,13 +245,13 @@ def test_browser_timeout_ends_live_demo_job(monkeypatch):
     assert observed == [False] and "timed out" in service.demo_error
 
 
-def test_failed_live_generation_cancels_before_any_demo_movement():
+def test_failed_local_synthesis_cancels_before_any_demo_movement():
     _, _, driver, _, runtime, demo, _, requested = demo_harness()
-    runtime.tts.demo_error = "Groq demo speech HTTP 400: model terms required"
+    runtime.tts.demo_error = "Could not load the Piper voice"
     runtime.tts.speak_demo.side_effect = lambda text, done, *args: (done(False), True)[1]
     demo._run()
     assert not requested and all(command == (0, 0, 0) for command in driver.commands)
-    assert "terms required" in demo.snapshot()["reason"]
+    assert "Piper voice" in demo.snapshot()["reason"]
 
 
 def test_missing_demo_configuration_rejects_start_without_motion():
@@ -258,11 +259,11 @@ def test_missing_demo_configuration_rejects_start_without_motion():
     demo._state["active"] = False
     arbiter.set_mode(RobotMode.IDLE)
     runtime.tts.prepare_demo_speech.return_value = False
-    runtime.tts.demo_error = "GROQ_API_KEY is not configured for speech"
+    runtime.tts.demo_error = "Configure PIPER_MODEL_PATH for demo narration"
     assert not demo.start("operator")
     assert arbiter.mode == RobotMode.IDLE
     assert all(command == (0, 0, 0) for command in driver.commands)
-    assert "GROQ_API_KEY" in demo.snapshot()["reason"]
+    assert "PIPER_MODEL_PATH" in demo.snapshot()["reason"]
 
 
 def test_demo_guards_audio_manual_and_listening():
@@ -420,13 +421,13 @@ def test_demo_bypass_cannot_override_expired_command_or_missing_dashboard():
 
 @pytest.mark.parametrize('during_synthesis', [False, True])
 def test_invalid_demo_camera_speech_never_plays_or_falls_back(monkeypatch, during_synthesis):
-    service = live_service(monkeypatch, audio_output='pi')
+    service = piper_service(monkeypatch, audio_output='pi')
     valid = [during_synthesis]
-    synthesize = service._demo_speech.synthesize.side_effect
+    synthesize = service._synthesize_piper.side_effect
     def changed(*args, **kwargs):
         synthesize(*args, **kwargs)
         valid[0] = False
-    service._demo_speech.synthesize.side_effect = changed
+    service._synthesize_piper.side_effect = changed
     play = Mock()
     monkeypatch.setattr(service, '_play_wav', play)
     completed = []

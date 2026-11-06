@@ -106,7 +106,7 @@ def test_normal_tts_restores_previous_selection_despite_stale_groq_settings(monk
     monkeypatch.setenv("AURUS_TTS_BACKEND", "groq")
     monkeypatch.setenv("GROQ_TTS_VOICE", "troy")
     monkeypatch.setenv("AURUS_TTS_VOICE", "en-US-GuyNeural")
-    monkeypatch.setattr("src.services.tts_service.GroqSpeechSynthesizer", Mock(side_effect=AssertionError("Normal TTS must not initialize Groq")))
+    client = configure_demo_client(monkeypatch)
     model = tmp_path / "ryan.onnx"
     model.write_bytes(b"model")
     monkeypatch.setattr("src.services.tts_service.importlib.util.find_spec", lambda name: object())
@@ -115,34 +115,43 @@ def test_normal_tts_restores_previous_selection_despite_stale_groq_settings(monk
     service._speak("Ordinary reply")
     assert service.backend == "piper" and service.voice == "en-US-GuyNeural"
     service._speak_piper.assert_called_once_with("Ordinary reply")
-    assert service._demo_speech is None
+    client.audio.speech.create.assert_not_called()
 
 
-def test_demo_uses_separate_settings_and_fresh_api_calls_per_replay(monkeypatch):
+@pytest.mark.parametrize("old_mode", ["live", "recorded"])
+def test_demo_uses_piper_despite_stale_groq_mode_and_recordings(monkeypatch, tmp_path, old_mode):
     client = configure_demo_client(monkeypatch)
+    monkeypatch.setenv("AURUS_DEMO_TTS_MODE", old_mode)
     monkeypatch.setenv("AURUS_DEMO_TTS_VOICE", "troy")
-    # Obsolete ordinary-cloud configuration cannot override demo-only settings.
-    monkeypatch.setenv("GROQ_TTS_MODEL", "obsolete")
-    monkeypatch.setenv("GROQ_TTS_VOICE", "invalid")
-    service = TTSService(audio_output="pi")
-    played = []
-    monkeypatch.setattr(service, "_play_wav", lambda path: played.append(Path(path)))
-    backend = service.backend
-    observed = []
-    for _ in range(2):
-        service._run_demo(DemoSpeech("Hello from AURUS", observed.append, "operator", threading.Event()))
-    assert observed == [True, True] and service.backend == backend
-    assert client.audio.speech.create.call_count == 2
-    assert all(call.kwargs["voice"] == "troy" for call in client.audio.speech.create.call_args_list)
-    assert played[0] != played[1] and all(not path.exists() for path in played)
-
-
-def test_demo_worker_cloud_failure_does_not_change_normal_backend_and_can_retry(monkeypatch):
-    client = configure_demo_client(monkeypatch)
-    client.audio.speech.create.side_effect = [RuntimeError("offline"), SimpleNamespace(write_to_file=write_pcm)]
-    service = TTSService(audio_output="pi")
+    monkeypatch.setattr("src.services.groq_tts_service.DEMO_RECORDINGS_DIR", tmp_path)
+    model = tmp_path / "voice.onnx"
+    model.touch()
+    monkeypatch.setattr("src.services.tts_service.importlib.util.find_spec", lambda name: object())
+    write_pcm(demo_recording_path(DEMO_CLIPS["closing"]))
+    service = TTSService(model, audio_output="pi")
+    render = Mock(side_effect=lambda _text, path: write_pcm(path))
+    monkeypatch.setattr(service, "_synthesize_piper", render)
     monkeypatch.setattr(service, "_play_wav", Mock())
-    monkeypatch.setattr(service, "_speak", Mock(side_effect=AssertionError("No local fallback for demo")))
+    observed = []
+    lines = [DEMO_CLIPS["closing"], "Right now, I can see a red mug."]
+    for text in lines:
+        service._run_demo(DemoSpeech(text, observed.append, "operator", threading.Event()))
+    assert observed == [True, True] and service.backend == "piper"
+    assert [call.args[0] for call in render.call_args_list] == lines
+    client.audio.speech.create.assert_not_called()
+
+
+def test_demo_worker_local_failure_does_not_change_normal_backend_and_can_retry(monkeypatch):
+    service = TTSService(audio_output="pi")
+    def render(text, path):
+        if text == "First line":
+            raise RuntimeError("Piper voice unavailable")
+        write_pcm(path)
+    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
+    monkeypatch.setattr(service, "_demo_espeak_backend", lambda: "")
+    monkeypatch.setattr(service, "_synthesize_piper", Mock(side_effect=render))
+    monkeypatch.setattr(service, "_play_wav", Mock())
+    monkeypatch.setattr(service, "_speak", Mock(side_effect=AssertionError("Demo must use its own playback path")))
     backend, original_error = service.backend, service.error
     observed = []
     done = threading.Event()
@@ -158,24 +167,24 @@ def test_demo_worker_cloud_failure_does_not_change_normal_backend_and_can_retry(
         assert service.speak_demo("Next attempt", completed, "operator", threading.Event())
         assert done.wait(2) and observed == [False, True]
         assert not service.demo_error and service.backend == backend
-        assert client.audio.speech.create.call_count == 2
+        assert service._synthesize_piper.call_count == 2
         service._speak.assert_not_called()
     finally:
         service.stop()
 
 
-def test_cancel_during_cloud_request_prevents_playback_and_later_chunks(monkeypatch):
-    client = configure_demo_client(monkeypatch)
+def test_cancel_during_piper_synthesis_prevents_playback(monkeypatch):
     cancelled = threading.Event()
-    def response(path):
+    def render(_text, path):
         write_pcm(path)
         cancelled.set()
-    client.audio.speech.create.return_value.write_to_file = response
     service = TTSService(audio_output="pi")
+    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
+    monkeypatch.setattr(service, "_synthesize_piper", render)
     monkeypatch.setattr(service, "_play_wav", Mock())
     observed = []
     service._run_demo(DemoSpeech("Welcome everyone. " * 30, observed.append, "operator", cancelled))
-    assert observed == [False] and client.audio.speech.create.call_count == 1
+    assert observed == [False]
     service._play_wav.assert_not_called()
     assert not service.busy and not service.playback_active.is_set()
 
@@ -301,12 +310,15 @@ def test_demo_check_command_reports_failure_without_playback(monkeypatch, capsys
     assert "EXAMPLE_SECRET" not in capsys.readouterr().err
 
 
-def test_missing_key_affects_only_demo_readiness(monkeypatch):
+def test_demo_readiness_depends_on_local_voice(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     service = TTSService()
     backend, original_error = service.backend, service.error
     assert service.speak("Ordinary reply")
-    assert not service.prepare_demo_speech() and "GROQ_API_KEY" in service.demo_error
+    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "")
+    assert not service.prepare_demo_speech() and "PIPER_MODEL_PATH" in service.demo_error
+    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
+    assert service.prepare_demo_speech() and not service.demo_error
     assert service.backend == backend and service.error == original_error
 
 
@@ -337,40 +349,17 @@ def test_prepare_resumes_after_rate_limit_and_reuses_completed_recordings(monkey
     assert check_demo_tts.main() == 0
 
 
-def test_recorded_demo_replays_saved_line_without_groq_and_keeps_original(monkeypatch, tmp_path):
-    monkeypatch.setenv("AURUS_DEMO_TTS_MODE", "recorded")
-    monkeypatch.setattr("src.services.groq_tts_service.DEMO_RECORDINGS_DIR", tmp_path)
-    monkeypatch.setattr("src.services.tts_service.GroqSpeechSynthesizer", Mock(side_effect=AssertionError("Recorded mode is local")))
+def test_demo_uses_espeak_if_piper_fails(monkeypatch):
     service = TTSService(audio_output="pi")
     monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
-    monkeypatch.setattr(service, "_synthesize_piper", Mock(side_effect=AssertionError("Line is already recorded")))
-    played = []
-    monkeypatch.setattr(service, "_play_wav", lambda path: played.append(Path(path)))
-    text = DEMO_CLIPS["closing"]
-    path = demo_recording_path(text)
-    write_pcm(path)
-    original = path.read_bytes()
-    completed = []
-    for _ in range(2):
-        service._run_demo(DemoSpeech(text, completed.append, "operator", threading.Event()))
-    assert completed == [True, True]
-    assert len(played) == 2 and all(not temp.exists() for temp in played)
-    assert path.read_bytes() == original
-
-
-@pytest.mark.parametrize("text", [DEMO_CLIPS["closing"], "Right now, I can see a red mug."])
-def test_recorded_demo_uses_local_speech_for_missing_clips_and_live_results(monkeypatch, tmp_path, text):
-    monkeypatch.setenv("AURUS_DEMO_TTS_MODE", "recorded")
-    monkeypatch.setattr("src.services.groq_tts_service.DEMO_RECORDINGS_DIR", tmp_path)
-    monkeypatch.setattr("src.services.tts_service.GroqSpeechSynthesizer", Mock(side_effect=AssertionError("Recorded mode is local")))
-    service = TTSService(audio_output="pi")
-    monkeypatch.setattr(service, "_offline_demo_backend", lambda: "piper")
-    render = Mock(side_effect=lambda _text, path: write_pcm(path))
-    monkeypatch.setattr(service, "_synthesize_piper", render)
+    monkeypatch.setattr(service, "_demo_espeak_backend", lambda: "espeak-ng")
+    monkeypatch.setattr(service, "_synthesize_piper", Mock(side_effect=RuntimeError("Piper load failed")))
+    def render(command, **_kwargs):
+        assert command[:2] == ["espeak-ng", "-w"]
+        write_pcm(command[2])
+    monkeypatch.setattr("src.services.tts_service.subprocess.run", Mock(side_effect=render))
     monkeypatch.setattr(service, "_play_wav", Mock())
     completed = []
-    service._run_demo(DemoSpeech(text, completed.append, "operator", threading.Event()))
+    service._run_demo(DemoSpeech(DEMO_CLIPS["closing"], completed.append, "operator", threading.Event()))
     assert completed == [True]
-    assert render.call_args.args[0] == text
     service._play_wav.assert_called_once()
-    assert not list(tmp_path.glob("*.wav"))

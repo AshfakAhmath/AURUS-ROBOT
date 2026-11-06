@@ -141,15 +141,21 @@ class VisionService:
             return self._jpeg
 
     def get_fresh_jpeg(self) -> bytes | None:
+        return self.get_fresh_frame()[1]
+
+    def get_fresh_frame(self) -> tuple[VisionSnapshot, bytes | None]:
         with self._lock:
             if (self._enabled and self._snapshot.healthy and self._snapshot.age <= 1.0
                     and self._snapshot.generation == self._generation):
-                return self._jpeg
-            return None
+                return self._snapshot, self._jpeg
+            return self._snapshot, None
 
     def _configure_models(self) -> None:
         if cv2 is None:
             raise RuntimeError("OpenCV is not installed")
+        if self.identity_service is None:
+            self._backend = "camera"
+            return
         yunet = self.model_dir / "face_detection_yunet_2023mar.onnx"
         sface = self.model_dir / "face_recognition_sface_2021dec.onnx"
         self._detector = None
@@ -419,6 +425,10 @@ class VisionService:
             return self._process_frame(frame)
 
     def _process_frame(self, frame) -> VisionSnapshot:
+        if self.identity_service is None:
+            resized = cv2.resize(frame, (self.width, self.height))
+            return self._publish_frame(resized)
+
         resized, detections = self._detect(frame)
         detections.sort(key=lambda item: item[2] * item[3], reverse=True)
         identity = IdentityResult()
@@ -458,14 +468,17 @@ class VisionService:
             x, y, _, _, _, _ = detections[0]
             cv2.putText(resized, label, (max(0, x), max(20, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
 
-        ok, encoded = cv2.imencode(".jpg", resized, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
+        return self._publish_frame(resized, tuple(faces_payload), center_x, primary_width, identity)
+
+    def _publish_frame(self, frame, faces=(), center_x=None, primary_width=None, identity=None) -> VisionSnapshot:
+        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 72])
         snapshot = VisionSnapshot(
             timestamp=time.monotonic(),
             healthy=True,
-            faces=tuple(faces_payload),
+            faces=faces,
             primary_center_x=center_x,
             primary_width=primary_width,
-            identity=identity,
+            identity=identity if identity is not None else IdentityResult(),
             backend=self._backend,
             error="",
             enabled=True,

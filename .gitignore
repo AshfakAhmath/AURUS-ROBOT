@@ -31,6 +31,7 @@ env/
 
 # Runtime data, downloaded models, and logs
 models/*.onnx
+models/*.task
 models/*.gguf
 models/vosk-model-*/
 models/sherpa-onnx-kws-*/

@@ -145,7 +145,7 @@ def test_face_caption_is_actual_normal_playback_not_queued_text(expo_runtime, mo
         tts.stop()
 
 
-def test_groq_demo_narration_uses_the_same_face_caption_path(expo_runtime, monkeypatch):
+def test_piper_demo_narration_uses_the_same_face_caption_path(expo_runtime, monkeypatch):
     app, _, _, _ = create_app(expo_runtime)
     client = app.test_client()
     tts = expo_runtime.tts
@@ -155,7 +155,8 @@ def test_groq_demo_narration_uses_the_same_face_caption_path(expo_runtime, monke
             output.setsampwidth(2)
             output.setframerate(24000)
             output.writeframes(np.zeros(2400, dtype='<i2').tobytes())
-    tts._demo_speech = SimpleNamespace(ready=True, error='', synthesize=synthesize)
+    monkeypatch.setattr(tts, '_offline_demo_backend', lambda: 'piper')
+    monkeypatch.setattr(tts, '_synthesize_piper', synthesize)
     observed = []
     def player():
         observed.append(client.get('/face/state').json['transcript'])

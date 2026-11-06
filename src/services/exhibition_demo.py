@@ -102,8 +102,7 @@ class ExhibitionDemo:
             result.append(success)
             done.set()
         self._update(stage=stage)
-        provider = "recorded-demo" if getattr(self.runtime.tts, "demo_mode", "live") == "recorded" else "groq-demo-tts"
-        self.runtime.emit("conversation", {"source": "demo", "transcript": "", "response": text, "provider": provider})
+        self.runtime.emit("conversation", {"source": "demo", "transcript": "", "response": text, "provider": "local-demo-tts"})
         options = {"valid_when": valid_when} if valid_when is not None else {}
         if not self.runtime.tts.speak_demo(text, completed, self._owner_sid, self._cancelled, **options):
             self.cancel("Demo audio could not be queued")
@@ -121,7 +120,7 @@ class ExhibitionDemo:
             if valid_when is not None and not valid_when():
                 self._update(objects=[], vision_status="changed")
                 return self._alive()
-            self.cancel(self.runtime.tts.demo_error or "Demo audio unavailable; check Groq access and speaker playback")
+            self.cancel(self.runtime.tts.demo_error or "Demo audio unavailable. Check the local voice and speaker playback.")
             return False
         return self._alive()
 

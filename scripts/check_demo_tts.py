@@ -1,4 +1,4 @@
-"""Verify Groq demo narration or prepare recordings without starting the robot."""
+"""Check Groq speech access or export the scripted lines as WAVs."""
 
 import argparse
 import os
@@ -55,7 +55,7 @@ def main():
     try:
         if args.prepare:
             prepare_recordings()
-            print("Recordings ready. Set AURUS_DEMO_TTS_MODE=recorded on the Pi to use them.")
+            print("Recordings saved in logs/demo-audio/ for standalone playback.")
             return 0
         speech = GroqSpeechSynthesizer()
         if not speech.ready:

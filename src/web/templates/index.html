@@ -69,7 +69,7 @@
             <span id="connection" class="pill bad"><i></i> Offline</span>
             <span id="mode" class="pill mode-pill">Idle</span>
           </div>
-          <a class="button ghost-button face-link" href="{{ url_for('face_display') }}" target="_blank" rel="noopener">Open Face Display</a>
+          <a class="button ghost-button face-link" href="{{ url_for('face_display') }}" target="_blank" rel="noopener">Open Mascot Display</a>
           <button id="clear-estop" class="button ghost-button">Clear E-stop</button>
           <button id="estop" class="button estop"><span class="stop-icon"></span>Emergency stop</button>
         </div>
@@ -80,7 +80,7 @@
           <div class="panel-head">
             <div>
               <p class="section-kicker">Perception</p>
-              <h2>Visual identity</h2>
+              <h2>Live camera</h2>
             </div>
             <div class="camera-actions">
               <span id="vision-backend" class="meta-chip">Waiting</span>
@@ -96,26 +96,17 @@
             </div>
             <div class="viewfinder" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
             <div id="camera-feed-status" class="camera-status"><i></i> Waiting</div>
-            <div class="identity-card">
-              <div class="identity-orb" aria-hidden="true"></div>
-              <div>
-                <span id="identity-status">No target</span>
-                <strong id="identity-name">Unknown</strong>
-                <small id="identity-confidence">Confidence 0.00</small>
-              </div>
-            </div>
           </div>
 
           <div class="enrollment-block">
             <div class="enroll-row">
               <label class="input-shell" for="enroll-name">
                 <span>Name</span>
-                <input id="enroll-name" maxlength="80" autocomplete="off" placeholder="Person to enroll">
+                <input id="enroll-name" maxlength="80" autocomplete="off" placeholder="Your name">
               </label>
-              <button id="enroll" class="button primary-button">Enroll face</button>
+              <button id="enroll" class="button primary-button">Set name</button>
             </div>
-            <div class="progress"><div id="enroll-progress"></div></div>
-            <p id="enroll-label" class="muted">Enrollment idle</p>
+            <p id="enroll-label" class="muted" role="status">Enter your name to use personal memory.</p>
           </div>
           <div class="object-detection">
             <div>
@@ -296,7 +287,7 @@
           <div class="memory-row">
             <div class="memory-label"><span class="memory-icon" aria-hidden="true"></span><span>Personal memory</span></div>
             <label for="fact" class="sr-only">Fact to remember</label>
-            <input id="fact" maxlength="500" autocomplete="off" placeholder="A fact to remember about the recognized person">
+            <input id="fact" maxlength="500" autocomplete="off" placeholder="A fact to remember about you">
             <button id="remember" class="button ghost-button">Remember</button>
           </div>
 

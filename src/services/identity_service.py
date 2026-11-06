@@ -61,8 +61,8 @@ class IdentityService:
             self._enrollment = EnrollmentStatus(active=True, name=clean, required=self.required_samples)
             return self._enrollment
 
-    def begin_session_identity(self, name: str) -> EnrollmentStatus:
-        """Fallback when SFace is unavailable: persist name/facts, not biometric matching."""
+    def begin_session_identity(self, name: str, *, camera_identity: bool = True) -> EnrollmentStatus:
+        """Use a name explicitly provided by a visitor for the current session."""
         clean = " ".join(name.strip().split())[:80]
         if not clean:
             raise ValueError("name is required")
@@ -75,7 +75,7 @@ class IdentityService:
                 accepted=1,
                 required=1,
                 complete=True,
-                error="session identity only; SFace model unavailable",
+                error="session identity only; SFace model unavailable" if camera_identity else None,
             )
             return self._enrollment
 

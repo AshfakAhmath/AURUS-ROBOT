@@ -1,9 +1,8 @@
 # AURUS speech and FIT Expo demo setup
 
-Normal speech uses the previous automatic Piper / Edge / eSpeak selection and
-its previous gain behavior. The FIT Expo demo can use live Groq Orpheus/Troy or
-replay prepared Troy WAVs. In recorded mode, missing clips and live camera results
-use Piper or eSpeak. Long Groq lines are split at 200 characters.
+Normal speech selects Piper, Edge or eSpeak. The FIT Expo demo uses the
+configured Piper model with eSpeak as its local fallback for both scripted
+narration and live camera announcements.
 
 ## 1. Transfer the reviewed changes
 
@@ -42,8 +41,7 @@ No new package requirement was added; Groq was already a project dependency.
 
 ## 2. Edit the existing Pi .env
 
-Keep your private replacement `GROQ_API_KEY`; it is still needed for chat,
-vision, speech recognition and live demo narration. Never paste it into chat.
+Keep your private `GROQ_API_KEY` for chat, vision and speech recognition.
 Remove the obsolete ordinary-cloud settings `AURUS_TTS_BACKEND`,
 `GROQ_TTS_MODEL` and `GROQ_TTS_VOICE`. They no longer select normal speech.
 
@@ -60,10 +58,7 @@ AURUS_TTS_VOICE=en-US-GuyNeural
 AURUS_TTS_VOLUME_PERCENT=100
 AURUS_TTS_GAIN_DB=12
 
-# Demo only: recorded for repeatable shows, or live for fresh Groq speech
-AURUS_DEMO_TTS_MODE=recorded
-AURUS_DEMO_TTS_MODEL=canopylabs/orpheus-v1-english
-AURUS_DEMO_TTS_VOICE=troy
+# Demo volume and speech processing
 AURUS_DEMO_AUDIO_ENHANCE=true
 AURUS_DEMO_TTS_GAIN_DB=6
 
@@ -98,50 +93,19 @@ output card 2/device 0. Card numbers can change after reboot. Card 2 is for the
 3.5 mm headphone jack, not a USB/Bluetooth speaker. Confirm the correct
 connection, speaker power, physical volume and ALSA mute/volume before the demo.
 
-## 4. Confirm Groq demo access
+## 4. Check the local demo voice
 
-Use the Groq account/organization that owns the private key. Open the
-[Orpheus playground](https://console.groq.com/playground?model=canopylabs/orpheus-v1-english).
-If it requests model terms, the appropriate account administrator must review
-and accept them if they agree. HTTP 400 alone does not establish the cause;
-`model_terms_required` is now reported explicitly when returned by Groq.
-
-The live demo mode requires internet and available Groq quota. A failed generation
-cancels the demo before its next gesture and reports the reason. It does not
-reuse an earlier recording or silently change the demo voice. An in-flight
-cloud request can finish after Stop, but its audio is discarded and no later
-chunk, playback or movement is started for the cancelled demo.
-
-After transferring the updated source (including `scripts/check_demo_tts.py`
-and `src/services/speech_audio.py`), verify synthesis without robot startup:
+Set `PIPER_MODEL_PATH` to your installed `.onnx` voice file, with its
+`.onnx.json` configuration next to it. Run the voice test with the robot stopped.
 
 ```bash
-.venv/bin/python scripts/check_demo_tts.py
+.venv/bin/python scripts/test_tts.py
 ```
 
-To also play through the confirmed headphone output:
-
-```bash
-.venv/bin/python scripts/check_demo_tts.py --play --device plughw:2,0
-```
-
-Both commands request a fresh introduction and delete the temporary audio.
-Only `--play` invokes audio playback. They never initialize the robot runtime,
-GPIO or motors and do not print the API key. Successful synthesis confirms API
-access at that moment; an audible introduction confirms the speaker route.
-
-To prepare the scripted lines for recorded mode, run this once on the Pi when
-Groq speech quota is available:
-
-```bash
-.venv/bin/python scripts/check_demo_tts.py --prepare
-```
-
-The script saves clips in `logs/demo-audio/`. If it stops partway through,
-run it again when quota is available. Completed clips are reused. Recorded
-mode works immediately with Piper or eSpeak installed and uses the local voice
-for any clips still missing. It makes no Groq TTS calls during a show. Live
-object recognition still needs Groq Vision. Restart AURUS after changing mode.
+The demo uses Piper when available, and can use eSpeak if Piper fails. A demo
+speech or playback failure stops later gestures and reports the reason. Older
+`AURUS_DEMO_TTS_MODE` settings are ignored. The live object check still needs
+Groq Vision. `scripts/check_demo_tts.py` is a separate Groq audio export tool.
 
 ## 5. Start manually and test
 
@@ -160,8 +124,6 @@ movement area clear and supervise the robot. Stop Demo, E-STOP and operator
 disconnect still cancel later actions. Press Ctrl+C to stop AURUS; keep the
 service disabled and do not run a second hardware owner concurrently.
 
-Reference: [Groq Orpheus speech](https://console.groq.com/docs/text-to-speech/orpheus).
-
 ## 6. Camera ON/OFF control
 
 After deliberately updating the Pi code, stop the manual AURUS process with
@@ -169,23 +131,21 @@ Ctrl+C, start it again with `.venv/bin/python run.py`, and refresh the dashboard
 (Ctrl+Shift+R if its old JavaScript/CSS is cached). No new Python package is
 required for this change.
 
-The **Visual identity** panel now has a **Turn camera off / Turn camera on**
-button above the video. This controls actual capture and face processing.
+The **Live camera** panel has a **Turn camera off / Turn camera on** button
+above the video. This controls capture for preview, object detection and gestures.
 
-- OFF clears the current image and recognized visitor, cancels unfinished
-  enrollment, and releases the camera through its existing single worker.
-  Previously saved people, face models and memories remain stored.
+- OFF clears the current image and releases the camera through its existing
+  single worker.
 - The panel shows **Stopping camera...** while an in-flight camera operation
   finishes, then **Camera switched off** after release. Driver release failures
   are shown as camera errors and retried; they are not reported as a completed
   OFF transition. The application does not create a second camera owner.
-- Enrollment and visual questions are unavailable while OFF. Old frames and
-  AI descriptions that cross an OFF/ON transition are rejected. Re-enabling
-  requires fresh frames before enrollment or identification can resume.
+- Visual questions, object detection and gesture scans are unavailable while
+  OFF. Results from before an OFF/ON transition are discarded.
 - Switching OFF during Explore stops motion and returns to idle. Switching ON
   does not resume movement: choose Explore again when ready.
 - Manual ultrasonic-controlled movement, ordinary speech and the scripted
-  Groq FIT Expo demo remain available while the camera is OFF.
+  FIT Expo demo remain available while the camera is OFF.
 - All connected dashboards receive the state. Disconnecting hides that
   browser's old image and disables its camera controls until reconnection.
 
@@ -201,13 +161,12 @@ capture and model initialization paused. Restart reads this value again.
 Keep one AURUS instance running; do not launch separate camera diagnostics
 while the camera is still reported as stopping or in a release-error state.
 
-For a stationary Pi check, toggle OFF and confirm the image disappears, face
-enrollment is disabled and “What can you see?” explains that the camera is off.
-Toggle ON and wait for a fresh image. Recognize/enroll again, then check that
-text chat and the demo still work. Test Explore pause only in a suitable clear
+For a stationary Pi check, toggle OFF and confirm the image disappears,
+**Try a Gesture** is disabled and “What can you see?” explains that the camera
+is off. Toggle ON and wait for a fresh image. Test Explore pause only in a suitable clear
 area under operator control; no physical movement test was run automatically.
 
-## 7. Object announcements and face transcripts
+## 7. Object announcements and mascot transcripts
 
 After transferring the updated code, stop AURUS with Ctrl+C and restart with
 `.venv/bin/python run.py`. Refresh both the dashboard and `/face` display with
@@ -219,16 +178,15 @@ voice as normal conversation. A voice or typed `Identify this object` request
 still speaks only once. If speech cannot be queued, the visual result remains
 available and the dashboard explains the speech issue.
 
-Open **Open Face Display** on the presentation monitor. The current spoken
-sentence appears below the face during Pi-speaker or PC-browser playback,
+Open **Open Mascot Display** on the presentation monitor. The current spoken
+sentence appears below the mascot during Pi-speaker or PC-browser playback,
 including FIT Expo narration. Text clears when speech ends. Captions show the
 whole utterance, with the existing display polling delay, rather than word-by-word
 highlighting. Check a normal greeting, an object result and a demo line.
 
 Switching the camera OFF or restarting its session discards unfinished scans
 and button announcements still waiting for playback. An announcement already
-playing may finish. The face window remains a read-only display and does not
-take over dashboard controls.
+playing may finish.
 
 ## 8. Refined demo and MCP clearance margins
 
@@ -265,3 +223,29 @@ gradually, and the live object line matches a visible prop. Check an MCP command
 at a measured 30 cm, 22–24 cm and below 20 cm to confirm normal, reduced and
 stopped output respectively. Physical motor smoothness and stopping distance
 must be checked on the Pi; automated tests use simulated devices only.
+
+## 9. Mascot gestures
+
+On 64-bit Raspberry Pi OS, install the optional recognizer into the existing
+virtual environment and download the model. The OpenCV and NumPy bounds keep
+the install compatible with AURUS's NumPy 1.x dependency.
+
+```bash
+.venv/bin/python -m pip install --only-binary=:all: 'mediapipe==1.2.2' 'numpy>=1.24,<2' 'opencv-contrib-python==4.11.0.86'
+.venv/bin/python scripts/setup_models.py --gesture-only
+.venv/bin/python run.py
+```
+
+Open **Open Mascot Display** from the dashboard. With the preview live,
+select **Try a Gesture** and show one of these to the camera.
+
+- **Wave** by moving one open hand side to side.
+- **Thumbs-up** by holding one thumb up.
+- **Heart** by joining both index fingertips above both thumbs.
+- **Open palm** by holding one open hand still, facing the camera.
+- **Peace sign** by raising the index and middle fingers.
+
+The scan runs locally for up to three seconds per tap, with extra time to load
+the model on the first tap. The live preview can stay on between scans. Gesture
+results animate the mascot on that display without issuing motor commands.
+Use **Set name** or say “My name is …” for personal memory.

@@ -45,20 +45,17 @@ function renderCamera(data = {}) {
     cameraFeedGeneration = null;
     const labels = !cameraConnected ? ['Dashboard disconnected', 'Reconnect to control the camera.']
       : state === 'error' ? ['Camera unavailable', cameraControl.error || 'Check the camera connection.']
-      : !enabled ? [state === 'stopping' ? 'Stopping camera...' : 'Camera switched off', 'Video, face detection and recognition are paused.']
+      : !enabled ? [state === 'stopping' ? 'Stopping camera...' : 'Camera switched off', 'The video feed and camera scans are paused.']
       : ['Camera starting...', 'Waiting for a fresh camera image.'];
     $('camera-state').textContent = labels[0];
     $('camera-help').textContent = labels[1];
-    $('identity-status').textContent = 'NO FACE';
-    $('identity-name').textContent = 'No target';
-    $('identity-confidence').textContent = 'Confidence 0.00';
   }
   const feedLabel = ready ? 'Live feed' : state === 'error' ? 'Camera error' : state === 'stopping' ? 'Stopping' : !enabled ? 'Camera off' : 'Waiting';
   $('camera-feed-status').innerHTML = `<i></i> ${feedLabel}`;
   $('camera-feed-status').classList.toggle('inactive', !ready);
-  $('enroll').disabled = !ready || demoActive;
-  $('enroll-name').disabled = !ready || demoActive;
-  $('remember').disabled = !ready || demoActive;
+  $('enroll').disabled = !cameraConnected || demoActive;
+  $('enroll-name').disabled = !cameraConnected || demoActive;
+  $('remember').disabled = !cameraConnected || demoActive;
   document.querySelectorAll('[data-mode="exploring"]').forEach(button => { button.disabled = !known || !enabled; });
   if (!enabled) $('vision-backend').textContent = 'Disabled';
   if (!ready || previousGeneration !== cameraControl.generation) {
@@ -201,13 +198,8 @@ function renderTelemetry(data) {
   $('decision').textContent = decision.reason;
   $('decision').style.color = decision.allowed ? 'var(--green)' : 'var(--red)';
   $('motion-vector').textContent = `Final · ${decision.final.vx.toFixed(2)} / ${decision.final.vy.toFixed(2)} / ${decision.final.omega.toFixed(2)}`;
-  const identity = data.vision.identity;
-  const faceCount = Number(data.vision.face_count || 0);
   if (!cameraControl || (data.vision.generation || 0) >= (cameraControl.generation || 0)) {
-    $('identity-status').textContent = faceCount ? identity.status.toUpperCase() : 'NO FACE';
-    $('identity-name').textContent = faceCount ? (identity.name || 'Not enrolled') : 'No target';
-    $('identity-confidence').textContent = `Confidence ${Number(identity.confidence || 0).toFixed(2)}`;
-    $('vision-backend').textContent = `${data.vision.backend} · ${faceCount} face${faceCount === 1 ? '' : 's'}`;
+    $('vision-backend').textContent = data.vision.backend === 'camera' ? 'Camera ready' : data.vision.backend;
   }
   renderEnrollment(data.enrollment);
   renderMission(data.mission);
@@ -315,12 +307,9 @@ function renderHealth(health) {
 
 function renderEnrollment(status) {
   if (!status) return;
-  const required = Math.max(1, Number(status.required || 20));
-  const accepted = Number(status.accepted || 0);
-  $('enroll-progress').style.width = `${Math.min(100, accepted / required * 100)}%`;
   $('enroll-label').textContent = status.complete
-    ? `${status.name || 'Person'} enrolled${status.error ? ` (${status.error})` : ''}`
-    : status.active ? `Capturing ${accepted}/${required} good face samples…` : (status.error || 'Enrollment idle');
+    ? `Current visitor · ${status.name}`
+    : (status.error || 'Enter your name to use personal memory.');
 }
 
 function renderConversation(data) {

@@ -1,4 +1,4 @@
-"""Normal TTS and live or recorded FIT Expo narration.
+"""Normal TTS and local FIT Expo narration.
 
 Audio output can be routed to the Pi's local speaker or streamed over
 SocketIO to the connected PC's browser.  Set ``AURUS_AUDIO_OUTPUT`` to
@@ -27,8 +27,6 @@ from typing import Any, Callable
 
 import numpy as np
 
-from src.services.demo_script import DEMO_CLIPS
-from src.services.groq_tts_service import GroqSpeechSynthesizer, demo_recording_path, has_demo_recording
 from src.services.speech_audio import enhance_demo_wav
 
 logger = logging.getLogger("aurus.tts")
@@ -115,8 +113,6 @@ class TTSService:
         self._busy = threading.Event()
         self._demo_lock = threading.Lock()
         self._demo_job: DemoSpeech | None = None
-        self._demo_speech = None
-        self.demo_mode = os.getenv("AURUS_DEMO_TTS_MODE", "live").strip().lower()
         self.demo_error = ""
         self.backend = self._select_backend()
         self.error = "" if self.backend != "visual" else "No local TTS executable available"
@@ -246,18 +242,13 @@ class TTSService:
         return self._busy.is_set() or not self._queue.empty()
 
     def prepare_demo_speech(self) -> bool:
-        """Check demo configuration only; normal speech never uses this client."""
-        if self.demo_mode == "recorded":
-            ready = bool(self._offline_demo_backend())
-            self.demo_error = "" if ready else "Recorded demo mode requires Piper or eSpeak for live camera results and missing clips"
-            return ready
-        if self._demo_speech is None:
-            self._demo_speech = GroqSpeechSynthesizer()
-        self.demo_error = self._demo_speech.error
-        return self._demo_speech.ready
+        """Check for a local voice before arming demo movement."""
+        ready = bool(self._offline_demo_backend())
+        self.demo_error = "" if ready else "Configure PIPER_MODEL_PATH and install Piper, or install eSpeak for demo narration"
+        return ready
 
     def speak_demo(self, text, on_complete, recipient_sid, cancelled, valid_when=None) -> bool:
-        """Queue one demo line using the configured narration mode."""
+        """Queue one demo line for local synthesis and routed playback."""
         job = DemoSpeech(text, on_complete, recipient_sid, cancelled, valid_when=valid_when)
         if not text.strip() or self._stop.is_set() or cancelled.is_set():
             return False
@@ -305,12 +296,7 @@ class TTSService:
             return "piper"
         return self._demo_espeak_backend()
 
-    def _render_recorded_demo(self, text, path):
-        if text in DEMO_CLIPS.values():
-            recording = demo_recording_path(text)
-            if has_demo_recording(recording):
-                shutil.copyfile(recording, path)
-                return
+    def _synthesize_demo(self, text, path):
         backend = self._offline_demo_backend()
         if backend == "piper":
             try:
@@ -342,10 +328,7 @@ class TTSService:
                 raise RuntimeError(self.demo_error)
             with tempfile.TemporaryDirectory(prefix="aurus-demo-") as scratch:
                 path = Path(scratch) / "speech.wav"
-                if self.demo_mode == "recorded":
-                    self._render_recorded_demo(job.text, path)
-                else:
-                    self._demo_speech.synthesize(job.text, path, cancelled=job.cancelled)
+                self._synthesize_demo(job.text, path)
                 if job.cancelled.is_set() or self._stop.is_set():
                     return
                 self._boost_demo_audio(path)

@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+import io
 import json
 import tempfile
 import threading
@@ -798,7 +800,7 @@ class MCPAgentSafetyTests(unittest.TestCase):
         service = MCPAgentService(MCPRuntimeHarness(), api_key="")
         result = json.loads(service._dispatch_tool("remember_fact", {"fact": "likes robots"}))
         self.assertEqual(result["status"], "error")
-        self.assertIn("enroll", result["message"])
+        self.assertIn("introduce themselves", result["message"])
 
 
 class WebRuntimeHarness:
@@ -839,8 +841,43 @@ def expo_runtime(tmp_path, monkeypatch):
     return runtime
 
 
+def test_local_clock_date_and_location_answers_bypass_groq(expo_runtime, monkeypatch):
+    monkeypatch.setenv("AURUS_LOCATION", "Colombo, Sri Lanka")
+    monkeypatch.setattr("src.services.local_information._local_now", lambda: datetime(2026, 11, 6, 11, 32, tzinfo=timezone.utc))
+    planner = Mock(side_effect=AssertionError("Local facts do not need Groq"))
+    expo_runtime.mcp_agent._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=planner)))
+    expo_runtime.tts.speak = Mock(return_value=True)
+    assert expo_runtime.handle_text("What's the time right now?")["response"] == "The local time is 11:32 AM."
+    assert expo_runtime.handle_text("What day is it today?")["response"] == "Today is Friday, 6 November 2026."
+    assert expo_runtime.handle_text("Where are we?")["response"] == "I'm configured for Colombo, Sri Lanka."
+    planner.assert_not_called()
+
+
+def test_local_weather_uses_the_configured_place_and_live_data(expo_runtime, monkeypatch):
+    monkeypatch.setenv("AURUS_LOCATION", "Colombo, Sri Lanka")
+    monkeypatch.setenv("AURUS_WEATHER_LATITUDE", "6.93")
+    monkeypatch.setenv("AURUS_WEATHER_LONGITUDE", "79.86")
+    fetch = Mock(side_effect=[
+        io.BytesIO(b'{"current":{"temperature_2m":29,"weather_code":2}}'),
+        io.BytesIO(b'{"daily":{"temperature_2m_min":[24,25],"temperature_2m_max":[29,31],"precipitation_probability_max":[20,60]}}'),
+        TimeoutError(),
+    ])
+    monkeypatch.setattr("src.services.local_information.urlopen", fetch)
+    expo_runtime.tts.speak = Mock(return_value=True)
+    current = expo_runtime.handle_text("What's the weather like?")
+    assert current["provider"] == "open-meteo" and "29 degrees Celsius and partly cloudy" in current["response"]
+    assert "latitude=6.93&longitude=79.86" in fetch.call_args.args[0]
+    tomorrow = expo_runtime.handle_text("Will it rain in Colombo tomorrow?")
+    assert "tomorrow is 25 to 31 degrees Celsius" in tomorrow["response"] and "60 percent" in tomorrow["response"]
+    assert "couldn't retrieve live weather" in expo_runtime.handle_text("weather")["response"]
+    assert "configured location, Colombo" in expo_runtime.handle_text("Weather in Paris?")["response"]
+    assert fetch.call_count == 3
+
+
 def test_dashboard_and_browser_mic_share_chat_history_without_leaking_between_clients(expo_runtime, monkeypatch):
     agent = expo_runtime.mcp_agent
+    monkeypatch.setenv("AURUS_LOCATION", "Colombo, Sri Lanka")
+    monkeypatch.setattr("src.services.local_information._local_now", lambda: datetime(2026, 11, 6, 11, 32, tzinfo=timezone.utc))
     agent.router_model = "fake-router"
     agent.chat_model = "fake-chat"
     requests = []
@@ -870,6 +907,8 @@ def test_dashboard_and_browser_mic_share_chat_history_without_leaking_between_cl
             {"role": "user", "content": "Reveal the answer."},
         ]
         assert requests[2]["messages"][1:] == [{"role": "user", "content": "What were we talking about?"}]
+        assert "11:32 AM" in requests[2]["messages"][0]["content"]
+        assert "configured robot location is Colombo, Sri Lanka" in requests[2]["messages"][0]["content"]
         assert len(agent._chat_sessions) == 3
     finally:
         operator.disconnect()
@@ -1068,12 +1107,13 @@ def test_microphone_gain_reaches_inference_without_wrapping(expo_runtime, monkey
     assert tuple(gained) == (0, 998, -998, 32767, -32768)
 
 
-def test_face_display_is_read_only_and_does_not_claim_operator_connection(expo_runtime):
+def test_mascot_display_does_not_claim_operator_connection(expo_runtime):
     app, _, _, _ = create_app(expo_runtime)
     client = app.test_client()
     face = client.get("/face")
     assert face.status_code == 200
-    assert b"AURUS Face Display" in face.data
+    assert b"AURUS Mascot Display" in face.data
+    assert b"Try a Gesture" in face.data
     assert b"face.js" in face.data and b"socket.io" not in face.data
     assert b"Emergency stop</button>" not in face.data
     assert b'id="face-camera" data-stream-url="/video_feed"' in face.data
@@ -1083,6 +1123,23 @@ def test_face_display_is_read_only_and_does_not_claim_operator_connection(expo_r
     assert state.json == {"expression": "idle", "transcript": "", "camera_generation": 0}
     assert state.cache_control.no_store
     assert client.post("/face/state").status_code == 405
+    assert expo_runtime._demo_dashboard_sid is None
+
+
+def test_mascot_scans_only_after_explicit_request(expo_runtime):
+    expo_runtime.gestures = Mock()
+    expo_runtime.gestures.scan.return_value = {"gesture": "peace", "generation": 0}, 200
+    app, _, _, _ = create_app(expo_runtime)
+    client = app.test_client()
+    client.get("/face")
+    client.get("/face/state")
+    assert client.post("/face/gesture", json={"generation": False}).status_code == 400
+    expo_runtime.gestures.scan.assert_not_called()
+
+    result = client.post("/face/gesture", json={"generation": 0})
+    assert result.json == {"gesture": "peace", "generation": 0}
+    assert result.cache_control.no_store
+    expo_runtime.gestures.scan.assert_called_once_with(0)
     assert expo_runtime._demo_dashboard_sid is None
 
 

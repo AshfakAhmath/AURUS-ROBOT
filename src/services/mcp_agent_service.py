@@ -15,6 +15,7 @@ from typing import Any
 from src.core.models import RobotMode, camera_session_current
 from src.services.motion_execution import execute_sequence
 from src.services.distance_motion import prepare_movement, distance_feedback
+from src.services.local_information import chat_context
 from src.services.motion_arbiter import MCP_CAUTION_CM, MCP_HARD_STOP_CM
 
 try:
@@ -152,7 +153,7 @@ AURUS_MCP_TOOLS = [
         "type": "function",
         "function": {
             "name": "capture_image",
-            "description": "Analyze the current camera photo to describe visible surroundings and check face identity.",
+            "description": "Analyze the current camera photo to describe visible surroundings.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -439,9 +440,8 @@ class MCPAgentService:
                             res_str = res_dict["action"]
                         elif "distances_cm" in res_dict:
                             res_str = f"Front clear: {res_dict.get('front_clear', False)}, Front closest: {res_dict.get('front_min_cm', 0)}cm"
-                        elif "detected_person" in res_dict:
-                            name = res_dict["detected_person"].get("name", "Unknown")
-                            res_str = f"Seen: {name}"
+                        elif "description" in res_dict:
+                            res_str = res_dict["description"]
                         elif "memories" in res_dict:
                             res_str = f"Found {res_dict.get('count', 0)} memories."
                         elif "health" in res_dict:
@@ -654,19 +654,12 @@ class MCPAgentService:
                         "status": "error",
                         "message": "The current camera frame could not be analyzed.",
                     })
-                identity = snapshot.identity
                 return json.dumps(
                     {
                         "status": "ok",
                         "camera_healthy": snapshot.healthy,
                         "backend": snapshot.backend,
                         "description": description,
-                        "face_count": len(snapshot.faces),
-                        "detected_person": {
-                            "name": identity.name or "Unknown",
-                            "status": identity.status,
-                            "confidence": round(float(identity.confidence or 0.0), 2),
-                        },
                     }
                 )
 
@@ -681,7 +674,7 @@ class MCPAgentService:
                 if self.runtime.repository.get_user(user_id) is None:
                     return json.dumps({
                         "status": "error",
-                        "message": f"Unknown user_id {user_id}; enroll or recognize a person first.",
+                        "message": f"Unknown user_id {user_id}. Ask the visitor to introduce themselves first.",
                     })
                 self.runtime.repository.remember(user_id, fact)
                 return json.dumps({"status": "ok", "message": f"Remembered: {fact}"})
@@ -691,7 +684,7 @@ class MCPAgentService:
                 if self.runtime.repository.get_user(user_id) is None:
                     return json.dumps({
                         "status": "error",
-                        "message": f"Unknown user_id {user_id}; enroll or recognize a person first.",
+                        "message": f"Unknown user_id {user_id}. Ask the visitor to introduce themselves first.",
                     })
                 facts = self.runtime.repository.memories_for(user_id)
                 return json.dumps({"status": "ok", "count": len(facts), "memories": facts[:10]})
@@ -789,8 +782,11 @@ class MCPAgentService:
             "For a quiz or riddle, ask the question and wait for the next message before revealing the answer. "
             "Ask one short follow-up question when it helps the conversation. "
             "Keep replies natural for speech and use two or three short sentences. "
-            "Only mention robot specifications when relevant. Never claim a physical action or observation happened during chat."
+            "Only mention robot specifications when relevant. Never claim a physical action or observation happened during chat. "
+            "Use the provided clock and location when relevant. Never invent live weather."
         )
+        if context := chat_context():
+            system += f" {context}"
         if user_name:
             system += f" The user's name is {user_name}."
         if memories:

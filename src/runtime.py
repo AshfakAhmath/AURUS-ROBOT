@@ -15,6 +15,8 @@ from src.hardware.sensors import ProximitySensor
 from src.memory.repository import MemoryRepository
 from src.services.behavior_controller import BehaviorController
 from src.services.identity_service import IdentityService
+from src.services.gesture_service import GestureService
+from src.services.local_information import answer_local_question
 from src.services.motion_arbiter import MotionArbiter
 from src.services.sensor_sampler import SensorSampler
 from src.services.speech_service import SpeechService
@@ -50,9 +52,10 @@ class RobotRuntime:
             require_full_coverage=config.REQUIRE_FULL_SENSOR_COVERAGE,
         )
         self.vision = VisionService(
-            self.identity, self.project_root / "models",
+            None, self.project_root / "models",
             enabled=os.getenv("AURUS_CAMERA_ENABLED", "true").strip().lower() == "true",
         )
+        self.gestures = GestureService(self.vision, self.project_root / "models" / "gesture_recognizer.task")
 
         microphone_index = os.getenv("MIC_INDEX")
         try:
@@ -383,6 +386,10 @@ class RobotRuntime:
     def _start_enrollment(self, name: str):
         if self.demo_active:
             raise ValueError("Stop the FIT Expo demo before enrollment.")
+        if getattr(self.vision, "identity_service", self.identity) is None:
+            status = self.identity.begin_session_identity(name, camera_identity=False)
+            self.emit("enrollment_progress", status.as_dict())
+            return status
         snapshot = self.vision.get_snapshot()
         if not snapshot.enabled:
             raise ValueError("Camera is switched off. Turn it on before enrolling a face.")
@@ -400,9 +407,9 @@ class RobotRuntime:
     def remember_fact(self, text: str) -> tuple[bool, str]:
         if self.demo_active:
             return False, "Stop the FIT Expo demo before storing a fact."
-        identity = self.vision.get_snapshot().identity
+        identity = self._current_person()
         if identity.status != "known" or identity.user_id is None:
-            return False, "Please enroll or recognize a person before storing a memory."
+            return False, "Tell me your name before storing a memory."
         self.repository.remember(identity.user_id, text)
         return True, f"I will remember that {text}."
 
@@ -563,7 +570,7 @@ class RobotRuntime:
             started = self.start_exhibition_demo(owner_sid)
         if started:
             return {"status": "ok", "message": "FIT Expo demo started"}
-        message = "FIT Expo demo unavailable: stop other activity, clear E-STOP if appropriate, and check Groq demo speech access."
+        message = "FIT Expo demo unavailable. Stop other activity, check E-STOP, and check that Piper or eSpeak is ready."
         self.emit("command_error", {"message": message})
         return {"status": "error", "message": message}
 
@@ -608,6 +615,10 @@ class RobotRuntime:
         if INTRODUCTION_REQUEST.fullmatch(clean):
             return self._start_requested_demo(source, owner_sid)
 
+        if answer := answer_local_question(clean):
+            message, provider = answer
+            return self._announce(message, source, clean, provider)
+
         if any(phrase in lower for phrase in (
             "what have you found", "mission status", "exploration status",
             "summarize the mission", "summarise the mission",
@@ -650,7 +661,7 @@ class RobotRuntime:
             if facts:
                 response = f"{person.name}, I remember: " + "; ".join(facts[:4])
             else:
-                response = f"I recognize you as {person.name}, but you have not taught me a fact yet."
+                response = f"You introduced yourself as {person.name}. You have not taught me a fact yet."
             return self._announce(response, source, clean, "local")
 
         if matches_object_scan_command(clean):

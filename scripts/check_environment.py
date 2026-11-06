@@ -67,6 +67,7 @@ def main() -> int:
                 "flask_socketio",
                 "numpy",
                 "cv2",
+                "mediapipe",
                 "picamera2",
                 "pyaudio",
                 "vosk",
@@ -76,9 +77,7 @@ def main() -> int:
             )
         },
         "models": {
-            "yunet": (ROOT / "models" / "face_detection_yunet_2023mar.onnx").exists(),
-            "sface": (ROOT / "models" / "face_recognition_sface_2021dec.onnx").exists(),
-            "haar": (ROOT / "models" / "haarcascade_frontalface_default.xml").exists(),
+            "gesture": (ROOT / "models" / "gesture_recognizer.task").is_file(),
             "vosk": (ROOT / "models" / "vosk-model-small-en-us-0.15").is_dir(),
             "wake_word": (
                 ROOT
@@ -102,11 +101,11 @@ def main() -> int:
     if module("cv2"):
         import cv2
 
-        result["opencv"] = {
-            "version": cv2.__version__,
-            "yunet_api": hasattr(cv2, "FaceDetectorYN"),
-            "sface_api": hasattr(cv2, "FaceRecognizerSF"),
-        }
+        result["opencv"] = {"version": cv2.__version__}
+
+    result["gesture_assets_ready"] = all(
+        (result["modules"]["cv2"], result["modules"]["mediapipe"], result["models"]["gesture"])
+    )
 
     local_stt_ready = bool(result["modules"]["vosk"] and result["models"]["vosk"])
     groq_stt_ready = bool(result["modules"]["groq"] and os.getenv("GROQ_API_KEY", "").strip())

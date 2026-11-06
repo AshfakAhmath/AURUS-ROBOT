@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#071218">
-  <title>AURUS Face Display</title>
+  <title>AURUS Mascot Display</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23071218'/%3E%3Crect x='8' y='8' width='6' height='11' rx='3' fill='%2377fbe1'/%3E%3Crect x='18' y='8' width='6' height='11' rx='3' fill='%2377fbe1'/%3E%3Cpath d='M12 22q4 5 8 0' fill='none' stroke='%2377fbe1' stroke-width='2'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/face.css') }}">
   <script defer src="{{ url_for('static', filename='js/face.js') }}"></script>
 </head>
 <body>
-  <main class="display" id="face-display" data-expression="offline" data-state-url="{{ url_for('face_state') }}">
+  <main class="display" id="face-display" data-expression="offline"
+        data-state-url="{{ url_for('face_state') }}" data-gesture-url="{{ url_for('face_gesture') }}">
     <header class="display-header">
       <h1>AURUS<span> / TECHTITANS</span></h1>
       <p class="display-live" id="display-link">Connecting</p>
@@ -20,18 +21,39 @@
       </figure>
     </header>
     <div class="face-stage" aria-hidden="true">
-      <div class="visor">
-        <div class="eyes">
-          <div class="eye"></div>
-          <div class="eye"></div>
+      <div class="mascot">
+        <div class="mascot-body"><span>A</span></div>
+        <div class="mascot-head">
+          <div class="mascot-aerial"></div>
+          <div class="visor">
+            <div class="eyes">
+              <div class="eye"></div>
+              <div class="eye"></div>
+            </div>
+            <div class="mouth"></div>
+          </div>
         </div>
-        <div class="mouth"></div>
+        <svg class="mascot-arm" viewBox="0 0 84 124">
+          <path class="arm-sleeve" d="M58 66 68 88 46 113 30 104 47 85 40 72Z"/>
+          <path class="mascot-hand hand-palm" d="M39 73 29 67 12 49Q8 42 14 40Q17 38 22 42L31 50 25 21Q24 15 29 14Q34 13 36 20L41 39 40 11Q40 5 45 5Q51 5 51 12L52 39 56 15Q57 9 62 10Q68 11 66 19L63 42 69 25Q71 20 76 22Q80 24 78 30L71 58Q68 71 57 75Z"/>
+          <path class="mascot-hand hand-thumb" d="M36 72 24 64 22 47Q22 41 27 39L39 28 41 12Q42 6 48 8Q57 9 55 24L53 37 69 37Q76 37 75 44L71 65Q69 73 61 75Z"/>
+          <path class="mascot-hand hand-peace" d="M39 73 29 62 23 48Q21 41 27 39Q32 38 37 47L24 15Q21 8 27 6Q33 4 36 11L48 37 55 9Q57 2 63 4Q69 6 67 13L62 40Q71 37 74 46L71 62Q68 73 58 76Z"/>
+        </svg>
+        <svg class="mascot-heart" viewBox="0 0 130 95">
+          <path class="heart-hands" d="M8 72Q15 46 28 36Q43 23 58 38Q61 41 59 47L47 42Q36 45 32 56L45 58 60 65Q65 69 60 75L43 72 25 82Z"/>
+          <path class="heart-hands" d="M122 72Q115 46 102 36Q87 23 72 38Q69 41 71 47L83 42Q94 45 98 56L85 58 70 65Q65 69 70 75L87 72 105 82Z"/>
+          <path class="heart-spark" d="M65 12Q56 2 48 10Q39 20 65 38Q91 20 82 10Q74 2 65 12Z"/>
+        </svg>
       </div>
     </div>
     <p id="speech-transcript" class="speech-transcript" aria-live="polite" aria-atomic="true" hidden></p>
     <footer class="display-footer">
       <div class="expression-indicator" aria-hidden="true"></div>
       <p id="expression-caption" role="status">Connecting to AURUS</p>
+      <div class="gesture-controls">
+        <button id="try-gesture" type="button" disabled>Try a Gesture</button>
+        <small id="gesture-status" role="status">Wave · Thumbs-up · Two-hand heart · Open palm · Peace sign</small>
+      </div>
     </footer>
   </main>
 </body>
