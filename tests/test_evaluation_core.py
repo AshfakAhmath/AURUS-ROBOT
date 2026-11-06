@@ -839,6 +839,68 @@ def expo_runtime(tmp_path, monkeypatch):
     return runtime
 
 
+def test_dashboard_and_browser_mic_share_chat_history_without_leaking_between_clients(expo_runtime, monkeypatch):
+    agent = expo_runtime.mcp_agent
+    agent.router_model = "fake-router"
+    agent.chat_model = "fake-chat"
+    requests = []
+
+    def complete(**request):
+        if request["model"] == "fake-router":
+            content = "CHAT"
+        else:
+            requests.append(request)
+            content = ["Why did the robot cross the road?", "To recharge on the other side!", "What would you like to discuss?"][len(requests) - 1]
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    agent._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(side_effect=complete))))
+    expo_runtime.tts.speak = Mock(return_value=True)
+    app, socketio, _, _ = create_app(expo_runtime)
+    monkeypatch.setattr(socketio, "start_background_task", lambda run, *args: run(*args))
+    operator = socketio.test_client(app)
+    other = socketio.test_client(app)
+    try:
+        question = "Hello, tell me a joke about a robot sensor."
+        operator.emit("send_text", {"text": question})
+        operator.emit("send_text", {"text": "Reveal the answer.", "source": "browser-mic"})
+        other.emit("send_text", {"text": "What were we talking about?"})
+        assert requests[1]["messages"][1:] == [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": "Why did the robot cross the road?"},
+            {"role": "user", "content": "Reveal the answer."},
+        ]
+        assert requests[2]["messages"][1:] == [{"role": "user", "content": "What were we talking about?"}]
+        assert len(agent._chat_sessions) == 3
+    finally:
+        operator.disconnect()
+        other.disconnect()
+    assert set(agent._chat_sessions) == {None}
+
+
+def test_chat_keeps_a_bounded_recent_history_and_skips_empty_replies(expo_runtime, monkeypatch):
+    agent = expo_runtime.mcp_agent
+    now = 1000.0
+    monkeypatch.setattr("src.services.mcp_agent_service.time", SimpleNamespace(monotonic=lambda: now))
+    message = SimpleNamespace(content="A successful reply.")
+    create = Mock(return_value=SimpleNamespace(choices=[SimpleNamespace(message=message)]))
+    agent._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    for index in range(7):
+        assert agent.chat(f"Question {index}", None, []) == message.content
+
+    message.content = ""
+    assert "try asking again" in agent.chat("A request with an empty reply", None, [])
+    assert len(create.call_args.kwargs["messages"]) == 14
+    assert create.call_args.kwargs["messages"][1]["content"] == "Question 1"
+
+    message.content = "Another successful reply."
+    agent.chat("Follow-up", None, [])
+    assert all(entry["content"] != "A request with an empty reply" for entry in create.call_args.kwargs["messages"])
+
+    now += 601
+    agent.chat("New topic", None, [])
+    assert create.call_args.kwargs["messages"][1:] == [{"role": "user", "content": "New topic"}]
+
+
 @pytest.mark.parametrize("source, transcript", [
     ("text", "Introduce yourself!"),
     ("browser-mic", "Could you please introduce yourself to everyone?"),
@@ -1014,13 +1076,31 @@ def test_face_display_is_read_only_and_does_not_claim_operator_connection(expo_r
     assert b"AURUS Face Display" in face.data
     assert b"face.js" in face.data and b"socket.io" not in face.data
     assert b"Emergency stop</button>" not in face.data
+    assert b'id="face-camera" data-stream-url="/video_feed"' in face.data
     assert b'href="/face"' in client.get("/").data
 
     state = client.get("/face/state")
-    assert state.json == {"expression": "idle", "transcript": ""}
+    assert state.json == {"expression": "idle", "transcript": "", "camera_generation": 0}
     assert state.cache_control.no_store
     assert client.post("/face/state").status_code == 405
     assert expo_runtime._demo_dashboard_sid is None
+
+
+def test_face_camera_preview_follows_camera_session(expo_runtime):
+    app, _, _, _ = create_app(expo_runtime)
+    client = app.test_client()
+    assert client.get("/face/state").json["camera_generation"] == 0
+
+    expo_runtime.vision.set_enabled(False)
+    assert client.get("/face/state").json["camera_generation"] is None
+
+    state = expo_runtime.vision.set_enabled(True)
+    assert client.get("/face/state").json["camera_generation"] is None
+    expo_runtime.vision._snapshot = VisionSnapshot(
+        timestamp=time.monotonic(), healthy=True, generation=state["generation"],
+    )
+    expo_runtime.vision._jpeg = b"new-frame"
+    assert client.get("/face/state").json["camera_generation"] == state["generation"]
 
 
 def test_face_tracks_capture_processing_and_speech_with_estop_priority(expo_runtime):

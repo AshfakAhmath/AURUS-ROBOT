@@ -114,6 +114,7 @@ def runtime_for(vision):
     runtime.sensor_sampler, runtime.driver, runtime.arbiter = sampler, driver, arbiter
     runtime.behavior = SimpleNamespace(begin_exploration=Mock(), finish_exploration=Mock())
     runtime.demo = SimpleNamespace(active=False, cancel=Mock(), owner_disconnected=Mock())
+    runtime.mcp_agent = SimpleNamespace(set_chat_connected=Mock())
     runtime.tts = SimpleNamespace(speak=Mock())
     runtime.emit = Mock()
     return runtime

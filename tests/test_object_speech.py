@@ -130,15 +130,17 @@ def test_face_caption_is_actual_normal_playback_not_queued_text(expo_runtime, mo
     tts._queue.get_nowait()
     seen = []
     def player():
-        seen.append(client.get('/face/state').json)
+        state = client.get('/face/state').json
+        seen.append((state['expression'], state['transcript']))
     monkeypatch.setattr(tts, '_speak', lambda words: tts._play_locally(player))
     done = threading.Event()
     tts.start()
     try:
         assert tts.speak(text, done.set)
         assert done.wait(2)
-        assert seen == [{'expression': 'speaking', 'transcript': text}]
-        assert client.get('/face/state').json == {'expression': 'idle', 'transcript': ''}
+        assert seen == [('speaking', text)]
+        state = client.get('/face/state').json
+        assert (state['expression'], state['transcript']) == ('idle', '')
     finally:
         tts.stop()
 
@@ -233,5 +235,6 @@ def test_estop_face_hides_caption_even_if_current_audio_is_finishing(expo_runtim
     expo_runtime.tts._utterance_text = 'An utterance already playing.'
     def player():
         expo_runtime.arbiter.emergency_stop()
-        assert app.test_client().get('/face/state').json == {'expression': 'estop', 'transcript': ''}
+        state = app.test_client().get('/face/state').json
+        assert (state['expression'], state['transcript']) == ('estop', '')
     expo_runtime.tts._play_locally(player)

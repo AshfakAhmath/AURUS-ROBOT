@@ -193,6 +193,7 @@ class RobotRuntime:
 
     def set_demo_dashboard_client(self, sid: str, connected: bool) -> None:
         with self._lock:
+            self.mcp_agent.set_chat_connected(sid, connected)
             if connected:
                 self._demo_dashboard_clients.add(sid)
                 self._demo_dashboard_sid = sid
@@ -714,7 +715,7 @@ class RobotRuntime:
             distance = f"{clearance:.0f} centimetres" if clearance is not None else "unavailable"
             response = f"Systems checked. Available front-sensor clearance is {distance}. Current mode is {self.arbiter.mode.value}."
             return self._announce(response, source, clean, "local")
-        if any(word in lower for word in ("hello", "hi aurus", "hey aurus")):
+        if lower.rstrip(".!?,;: ") in ("hello", "hello aurus", "hi aurus", "hey aurus"):
             person = self._current_person()
             name = f", {person.name}" if person.name else ""
             return self._announce(f"Hello{name}! AURUS is ready.", source, clean, "local")
@@ -730,7 +731,7 @@ class RobotRuntime:
                 return self.mcp_agent.execute_command(clean)
             else:
                 # Fast Groq-powered chat without tool latency
-                response_text = self.mcp_agent.chat(clean, person.name, memories)
+                response_text = self.mcp_agent.chat(clean, person.name, memories, owner_sid=owner_sid)
                 return self._announce(response_text, source, clean, "groq-chat")
 
 

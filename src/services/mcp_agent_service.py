@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 import json
 import os
@@ -223,6 +225,13 @@ AURUS_MCP_TOOLS = [
 ]
 
 
+@dataclass
+class ChatSession:
+    turns: deque[tuple[str, str]] = field(default_factory=lambda: deque(maxlen=6))
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    last_reply_at: float = 0.0
+
+
 class MCPAgentService:
     def __init__(self, runtime: Any, api_key: str | None = None, model: str | None = None):
         self.runtime = runtime
@@ -233,6 +242,8 @@ class MCPAgentService:
         self._client = None
         self.error = ""
         self._execution_lock = threading.Lock()
+        self._chat_sessions: dict[str | None, ChatSession] = {None: ChatSession()}
+        self._chat_sessions_lock = threading.Lock()
         if self.api_key and Groq is not None:
             try:
                 self._client = Groq(api_key=self.api_key, timeout=15.0, max_retries=1)
@@ -250,6 +261,13 @@ class MCPAgentService:
     @property
     def busy(self) -> bool:
         return self._execution_lock.locked()
+
+    def set_chat_connected(self, sid: str, connected: bool) -> None:
+        with self._chat_sessions_lock:
+            if connected:
+                self._chat_sessions.setdefault(sid, ChatSession())
+            else:
+                self._chat_sessions.pop(sid, None)
 
     def execute_command(self, user_command: str, *, source: str = "agent") -> dict:
         if not self._execution_lock.acquire(blocking=False):
@@ -723,15 +741,15 @@ class MCPAgentService:
         """Lightweight semantic router to decide if command is an ACTION or CHAT."""
         if matches_object_scan_command(text):
             return "ACTION"
-        normalized = " ".join(text.lower().split())
+        normalized = " ".join(text.lower().split()).removeprefix("please ").rstrip(".!?")
         action_terms = (
             "move", "drive", "go forward", "go backward", "reverse", "turn left",
             "turn right", "spin", "stop", "halt", "explore", "look around",
-            "take a photo", "capture", "sensor", "dance", "showcase", "remember",
+            "take a photo", "capture", "read sensors", "check sensors", "dance", "showcase", "remember",
             "describe the environment", "describe my surroundings", "what do you see",
             "what can you see", "what is in front of you",
         )
-        if any(term in normalized for term in action_terms):
+        if any(normalized == term or normalized.startswith(term + " ") for term in action_terms):
             return "ACTION"
         if not self._client:
             return "CHAT"
@@ -741,7 +759,7 @@ class MCPAgentService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a router. Classify the user intent. If they want the robot to move, stop, look around, explore, remember facts, or perform any physical task, output exactly: ACTION. If it is just a greeting, a question, or casual chat, output exactly: CHAT. Output NOTHING else."
+                        "content": "Output ACTION when the user asks the robot to act or report a live observation. Output CHAT for general questions, explanations, jokes and conversational follow-ups, even when they mention sensors or movement. Output one label only."
                     },
                     {"role": "user", "content": text},
                 ],
@@ -755,39 +773,54 @@ class MCPAgentService:
             self.error = f"Groq router failed: {str(exc)[:180]}"
             return "CHAT"
 
-    def chat(self, text: str, user_name: str | None, memories: list[str]) -> str:
-        """Fast cloud-based conversational fallback when tool execution is not needed."""
+    def chat(self, text: str, user_name: str | None, memories: list[str], *, owner_sid: str | None = None) -> str:
+        """Answer with the recent exchanges from this dashboard or the Pi microphone."""
         if not self._client:
             return "My cloud brain is disconnected."
 
         system = (
             "You are AURUS, which stands for AUtonomous Robotic Ubiquitous System. "
-            "You are an advanced interactive robot built by the TechTitans team. "
+            "You are a friendly robot prototype built by Team TechTitans. "
             "Your hardware components include a Raspberry Pi 4 brain, "
             "4 mecanum wheels with L298N drivers, HC-SR04 ultrasonic sensors for obstacle avoidance, "
             "and a high-resolution camera. "
-            "Your software features include Agentic routing via Groq, autonomous visual exploration using Llama Vision, "
-            "flawless speech recognition via Whisper, highly realistic Edge TTS, face recognition, and persistent memory. "
-            "You can explore autonomously, avoid obstacles, recognize people, and showcase your mobility. "
-            "Keep responses concise, warm, and natural for text-to-speech (max 2 sentences)."
+            "Answer the current question directly and use earlier turns to understand follow-ups. "
+            "When asked for another example or joke, give a different one. Vary your phrasing and use concrete examples. "
+            "For a quiz or riddle, ask the question and wait for the next message before revealing the answer. "
+            "Ask one short follow-up question when it helps the conversation. "
+            "Keep replies natural for speech and use two or three short sentences. "
+            "Only mention robot specifications when relevant. Never claim a physical action or observation happened during chat."
         )
         if user_name:
             system += f" The user's name is {user_name}."
         if memories:
             system += f" Here are some facts you know about them: {'; '.join(memories)}"
 
-        try:
-            completion = self._client.chat.completions.create(
-                model=self.chat_model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": text},
-                ],
-                temperature=0.6,
-                max_completion_tokens=180,
-                reasoning_effort="low",
-            )
-            return (completion.choices[0].message.content or "").strip()
-        except Exception as exc:
-            self.error = f"Groq chat failed: {str(exc)[:180]}"
-            return "My cloud request failed. Please check the Groq connection and try again."
+        with self._chat_sessions_lock:
+            session = self._chat_sessions.get(owner_sid)
+        if session is None:
+            session = ChatSession()
+        with session.lock:
+            if time.monotonic() - session.last_reply_at > 600:
+                session.turns.clear()
+            messages = [{"role": "system", "content": system}]
+            for question, answer in session.turns:
+                messages.extend([{"role": "user", "content": question}, {"role": "assistant", "content": answer}])
+            messages.append({"role": "user", "content": text})
+            try:
+                completion = self._client.chat.completions.create(
+                    model=self.chat_model,
+                    messages=messages,
+                    temperature=0.85,
+                    max_completion_tokens=300,
+                    reasoning_effort="low",
+                )
+                reply = (completion.choices[0].message.content or "").strip()
+            except Exception as exc:
+                self.error = f"Groq chat failed: {str(exc)[:180]}"
+                return "My cloud request failed. Please check the Groq connection and try again."
+            if not reply:
+                return "I didn’t get an answer that time. Could you try asking again?"
+            session.turns.append((text[:1000], reply[:1000]))
+            session.last_reply_at = time.monotonic()
+            return reply

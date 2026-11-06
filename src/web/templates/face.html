@@ -14,6 +14,10 @@
     <header class="display-header">
       <h1>AURUS<span> / TECHTITANS</span></h1>
       <p class="display-live" id="display-link">Connecting</p>
+      <figure class="camera-preview" id="face-camera-preview" hidden>
+        <img id="face-camera" data-stream-url="{{ url_for('video_feed') }}" alt="Live view from the AURUS camera">
+        <figcaption>Live camera</figcaption>
+      </figure>
     </header>
     <div class="face-stage" aria-hidden="true">
       <div class="visor">

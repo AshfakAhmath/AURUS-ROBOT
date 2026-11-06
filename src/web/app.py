@@ -52,8 +52,11 @@ def create_app(runtime):
         with clients_lock:
             operator_busy = active_text_requests > 0
         expression = runtime.face_expression(operator_busy)
+        camera = runtime.camera_control()
+        camera_generation = camera["generation"] if camera["enabled"] and camera["state"] == "on" else None
         response = jsonify(expression=expression,
-                           transcript=runtime.tts.speaking_text if expression == "speaking" else "")
+                           transcript=runtime.tts.speaking_text if expression == "speaking" else "",
+                           camera_generation=camera_generation)
         response.cache_control.no_store = True
         return response
 
