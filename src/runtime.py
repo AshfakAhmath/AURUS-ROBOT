@@ -55,7 +55,11 @@ class RobotRuntime:
             None, self.project_root / "models",
             enabled=os.getenv("AURUS_CAMERA_ENABLED", "true").strip().lower() == "true",
         )
-        self.gestures = GestureService(self.vision, self.project_root / "models" / "gesture_recognizer.task")
+        self.gestures = GestureService(
+            self.vision,
+            self.project_root / "models" / "gesture_recognizer.task",
+            worker_python=self.project_root / ".venv-gestures" / "bin" / "python",
+        )
 
         microphone_index = os.getenv("MIC_INDEX")
         try:

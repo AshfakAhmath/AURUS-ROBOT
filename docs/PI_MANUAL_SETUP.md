@@ -226,14 +226,33 @@ must be checked on the Pi; automated tests use simulated devices only.
 
 ## 9. Mascot gestures
 
-On 64-bit Raspberry Pi OS with Python 3.9–3.12, install the optional recognizer
-into the existing virtual environment and download the model. MediaPipe
-1.2.2 triggered an illegal CPU instruction on the Pi 4. Use the older ARM64
-build below. The OpenCV and NumPy bounds keep the install compatible with
-AURUS's NumPy 1.x dependency.
+MediaPipe 1.2.2 triggered an illegal CPU instruction on the Pi 4. The older
+MediaPipe 0.10.18 ARM64 build has wheels for Python 3.9–3.12.
+
+On **Trixie (Python 3.13)**, create a separate Python 3.12 environment for
+gesture recognition. Run these commands from the AURUS checkout after updating
+the code. If needed, [install uv](https://docs.astral.sh/uv/getting-started/installation/)
+and open a new shell so `uv` is available.
+
+```bash
+uv venv --python 3.12 .venv-gestures
+UV_HTTP_TIMEOUT=120 uv pip install --python .venv-gestures/bin/python --only-binary=:all: \
+  'mediapipe==0.10.18' 'numpy>=1.24,<2' 'opencv-contrib-python==4.11.0.86'
+```
+
+AURUS uses `.venv-gestures/bin/python` for the recognizer when that interpreter
+exists. Start the application with the usual `.venv/bin/python` so the Pi system
+camera, microphone, and GPIO modules remain available to the main app.
+
+On **Bookworm (Python 3.11)**, install the recognizer into the existing environment.
 
 ```bash
 .venv/bin/python -m pip install --only-binary=:all: 'mediapipe==0.10.18' 'numpy>=1.24,<2' 'opencv-contrib-python==4.11.0.86'
+```
+
+On either OS, download the model and start AURUS.
+
+```bash
 .venv/bin/python scripts/setup_models.py --gesture-only
 .venv/bin/python run.py
 ```

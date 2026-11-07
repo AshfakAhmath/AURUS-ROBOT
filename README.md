@@ -16,14 +16,19 @@ The existing verified motor directions, GPIO pin assignments, ultrasonic wiring,
 
 ## Quick Start on Raspberry Pi
 
+Use 64-bit Raspberry Pi OS. On Trixie (Python 3.13), install the system GPIO
+package with `sudo apt install -y python3-rpi-lgpio` after `sudo apt update`.
+On Trixie, the pinned Pi 4 mascot recognizer uses a separate Python 3.12
+environment. See the [gesture setup](docs/PI_MANUAL_SETUP.md#9-mascot-gestures).
+
 Install runtime packages:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv python3-picamera2 python3-opencv python3-pyaudio portaudio19-dev espeak-ng build-essential cmake libopenblas-dev mpg123
+sudo apt install -y python3-venv python3-picamera2 python3-opencv python3-pyaudio alsa-utils portaudio19-dev espeak-ng build-essential cmake libopenblas-dev mpg123
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --only-binary=numpy -r requirements-pi.txt
 python scripts/setup_models.py
 cp .env.example .env
 # Add GROQ_API_KEY to .env, then validate it:

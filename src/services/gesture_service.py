@@ -6,7 +6,9 @@ from math import hypot
 from pathlib import Path
 import logging
 import multiprocessing
+import os
 import signal
+import subprocess
 import threading
 import time
 
@@ -112,9 +114,10 @@ class _ExpoScan(_Scan):
 
 
 class GestureService:
-    def __init__(self, vision, model_path: Path):
+    def __init__(self, vision, model_path: Path, worker_python: Path | None = None):
         self.vision = vision
         self.model_path = model_path
+        self._worker_python = worker_python
         self._lock = threading.Lock()
         self._stopping = threading.Event()
         self._worker = None
@@ -136,12 +139,21 @@ class GestureService:
             return
         context = multiprocessing.get_context("spawn")
         parent, child = context.Pipe()
-        worker = context.Process(
-            target=serve_gestures, args=(child, self.model_path),
-            name="aurus-gesture-worker", daemon=True,
-        )
         try:
-            worker.start()
+            if os.name == "posix" and self._worker_python and self._worker_python.is_file():
+                # The worker only needs gesture dependencies and inherits one end of the pipe.
+                fd = child.fileno()
+                worker = subprocess.Popen(
+                    [str(self._worker_python), "-I", "-X", "faulthandler",
+                     str(Path(__file__).with_name("gesture_worker.py")), str(fd), str(self.model_path)],
+                    pass_fds=(fd,),
+                )
+            else:
+                worker = context.Process(
+                    target=serve_gestures, args=(child, self.model_path),
+                    name="aurus-gesture-worker", daemon=True,
+                )
+                worker.start()
         except Exception:
             parent.close()
             raise
@@ -171,6 +183,17 @@ class GestureService:
             self._connection.close()
             self._connection = None
         if worker is None:
+            return None
+        if isinstance(worker, subprocess.Popen):
+            try:
+                return worker.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                worker.terminate()
+            try:
+                worker.wait(timeout=0.3)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait()
             return None
         worker.join(0.2)
         exitcode = worker.exitcode

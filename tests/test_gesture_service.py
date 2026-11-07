@@ -1,5 +1,7 @@
 import os
+from pathlib import Path
 import signal
+import sys
 import time
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -120,6 +122,30 @@ def test_camera_change_during_scan_discards_result(tmp_path):
     service._recognize = Mock()
     assert service.scan(0)[1] == 409
     service._recognize.assert_not_called()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires an inherited POSIX pipe")
+def test_separate_python_worker_uses_the_gesture_pipe(monkeypatch, tmp_path):
+    worker_script = tmp_path / "gesture_worker.py"
+    worker_script.write_text(
+        "import sys\n"
+        "from multiprocessing.connection import Connection\n"
+        "with Connection(int(sys.argv[1])) as connection:\n"
+        "    connection.send(('ok', sys.argv[2]))\n"
+        "    connection.send(('ok', connection.recv_bytes()))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("src.services.gesture_service.__file__", str(tmp_path / "gesture_service.py"))
+    model = tmp_path / "gesture_recognizer.task"
+    service = GestureService(Mock(), model, worker_python=Path(sys.executable))
+    try:
+        service._start_worker()
+        assert service._recognize(b"frame") == b"frame"
+        worker = service._worker
+    finally:
+        service.stop()
+    assert worker.returncode == 0
+    assert service._connection is None
 
 
 @pytest.mark.parametrize("worker", [_crash_on_start, _crash_on_frame])

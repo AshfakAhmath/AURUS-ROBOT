@@ -28,6 +28,7 @@ Thumbs.db
 venv/
 env/
 .venv/
+.venv-gestures/
 
 # Runtime data, downloaded models, and logs
 models/*.onnx

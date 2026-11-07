@@ -103,9 +103,15 @@ def main() -> int:
 
         result["opencv"] = {"version": cv2.__version__}
 
-    result["gesture_assets_ready"] = all(
-        (result["modules"]["cv2"], result["modules"]["mediapipe"], result["models"]["gesture"])
-    )
+    gesture_python = ROOT / ".venv-gestures" / "bin" / "python"
+    gesture_modules_ready = result["modules"]["cv2"] and result["modules"]["mediapipe"]
+    if os.name == "posix" and gesture_python.is_file():
+        result["gesture_python"] = str(gesture_python)
+        gesture_modules_ready = command_output([
+            str(gesture_python), "-I", "-c",
+            "from importlib.util import find_spec; print(all(find_spec(name) for name in ('cv2', 'mediapipe', 'numpy')))",
+        ]) == "True"
+    result["gesture_assets_ready"] = gesture_modules_ready and result["models"]["gesture"]
 
     local_stt_ready = bool(result["modules"]["vosk"] and result["models"]["vosk"])
     groq_stt_ready = bool(result["modules"]["groq"] and os.getenv("GROQ_API_KEY", "").strip())

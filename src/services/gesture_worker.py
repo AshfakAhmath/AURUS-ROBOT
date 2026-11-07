@@ -43,3 +43,10 @@ def serve_gestures(connection, model_path):
         connection.send(("error", str(exc)))
     finally:
         connection.close()
+
+
+if __name__ == "__main__":
+    import sys
+    from multiprocessing.connection import Connection
+
+    serve_gestures(Connection(int(sys.argv[1])), sys.argv[2])
