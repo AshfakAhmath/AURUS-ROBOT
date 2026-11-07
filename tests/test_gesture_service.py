@@ -124,6 +124,18 @@ def test_camera_change_during_scan_discards_result(tmp_path):
     service._recognize.assert_not_called()
 
 
+def test_worker_timeout_cleans_up_and_allows_retry(tmp_path):
+    service = GestureService(Mock(), tmp_path / "gesture_recognizer.task")
+    service._scan = Mock(side_effect=[TimeoutError("Gesture worker timed out during startup"), ({}, 200)])
+    service._close_worker = Mock()
+
+    result, status = service.scan(0)
+    assert status == 503
+    assert "timed out during startup" in result["message"]
+    service._close_worker.assert_called_once_with()
+    assert service.scan(0) == ({}, 200)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="requires an inherited POSIX pipe")
 def test_separate_python_worker_uses_the_gesture_pipe(monkeypatch, tmp_path):
     worker_script = tmp_path / "gesture_worker.py"

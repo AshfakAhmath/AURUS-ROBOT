@@ -137,6 +137,7 @@ class GestureService:
     def _start_worker(self):
         if self._worker is not None:
             return
+        log.info("Starting gesture worker")
         context = multiprocessing.get_context("spawn")
         parent, child = context.Pipe()
         try:
@@ -160,14 +161,15 @@ class GestureService:
         finally:
             child.close()
         self._worker, self._connection = worker, parent
-        self._worker_reply(timeout=10.0)
+        self._worker_reply(timeout=45.0, operation="startup")
+        log.info("Gesture worker is ready")
 
-    def _worker_reply(self, timeout):
+    def _worker_reply(self, timeout, *, operation):
         deadline = time.monotonic() + timeout
         while not self._stopping.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("Gesture worker did not respond")
+                raise TimeoutError(f"Gesture worker timed out during {operation} after {timeout:g} seconds")
             if self._connection.poll(min(remaining, 0.1)):
                 status, result = self._connection.recv()
                 if status == "missing":
@@ -208,7 +210,7 @@ class GestureService:
 
     def _recognize(self, jpeg):
         self._connection.send_bytes(jpeg)
-        return self._worker_reply(timeout=2.0)
+        return self._worker_reply(timeout=2.0, operation="inference")
 
     def scan(self, generation: int, *, automatic: bool = False, after: str | None = None) -> tuple[dict, int]:
         if not self._lock.acquire(blocking=False):
@@ -223,6 +225,10 @@ class GestureService:
             self._close_worker()
             log.warning("Gesture dependency could not load: %s", exc)
             return {"message": "Gesture dependencies could not load. Check the Pi gesture setup and logs."}, 503
+        except TimeoutError as exc:
+            self._close_worker()
+            log.warning("%s", exc)
+            return {"message": f"{exc}. Try again."}, 503
         except (OSError, EOFError) as exc:
             exitcode = self._close_worker()
             log.error("Gesture worker stopped (exit code %s): %s", exitcode, exc)

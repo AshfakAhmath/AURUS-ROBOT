@@ -1,10 +1,12 @@
 """Run native hand recognition outside the robot control process."""
 
+import faulthandler
 from types import SimpleNamespace
 
 
 def serve_gestures(connection, model_path):
     try:
+        faulthandler.dump_traceback_later(30)
         import cv2
         import mediapipe as mp
         import numpy as np
@@ -14,6 +16,7 @@ def serve_gestures(connection, model_path):
             num_hands=2,
         )
         with mp.tasks.vision.GestureRecognizer.create_from_options(options) as recognizer:
+            faulthandler.cancel_dump_traceback_later()
             connection.send(("ok", None))
             while True:
                 jpeg = connection.recv_bytes()
@@ -42,6 +45,7 @@ def serve_gestures(connection, model_path):
     except Exception as exc:
         connection.send(("error", str(exc)))
     finally:
+        faulthandler.cancel_dump_traceback_later()
         connection.close()
 
 

@@ -117,10 +117,11 @@ async function scanGesture(automatic) {
   const generation = cameraGeneration;
   const controller = new AbortController();
   let timedOut = false;
+  // Leave time for the worker's first startup and the scan that follows.
   const timeout = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, 15000);
+  }, 55000);
   let retryDelay = 100;
   gestureRequest = controller;
   updateGestureControls();
